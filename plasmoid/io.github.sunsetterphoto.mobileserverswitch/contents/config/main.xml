@@ -40,6 +40,9 @@
     <entry name="firewallZone" type="String">
       <default>auto</default>
     </entry>
+    <entry name="wolNic" type="String">
+      <default>auto</default>
+    </entry>
   </group>
 
   <group name="Services">

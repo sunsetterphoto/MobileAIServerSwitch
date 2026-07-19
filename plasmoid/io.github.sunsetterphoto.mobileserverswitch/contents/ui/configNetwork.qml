@@ -24,6 +24,9 @@ ColumnLayout {
     property alias cfg_firewallZone: firewallZoneField.text
     property string cfg_firewallZoneDefault: "auto"
 
+    property alias cfg_wolNic: wolNicField.text
+    property string cfg_wolNicDefault: "auto"
+
     spacing: Kirigami.Units.smallSpacing
 
     QQC2.Label {
@@ -59,6 +62,13 @@ ColumnLayout {
         QQC2.TextField {
             id: firewallZoneField
             Kirigami.FormData.label: "Firewall zone:"
+            placeholderText: "auto"
+            Layout.fillWidth: true
+        }
+
+        QQC2.TextField {
+            id: wolNicField
+            Kirigami.FormData.label: "Wake-on-LAN interface:"
             placeholderText: "auto"
             Layout.fillWidth: true
         }

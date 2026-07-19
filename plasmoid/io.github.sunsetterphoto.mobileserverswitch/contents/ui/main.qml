@@ -231,7 +231,8 @@ PlasmoidItem {
             network: {
                 lan_interfaces: c.lanInterfaces,
                 tailscale: c.tailscale,
-                firewall_zone: c.firewallZone
+                firewall_zone: c.firewallZone,
+                wol_nic: c.wolNic
             },
             services: parseArray(c.servicesJson),
             mode: {
@@ -304,6 +305,7 @@ PlasmoidItem {
         function onLanInterfacesChanged() { root.requestPersist(); }
         function onTailscaleChanged() { root.requestPersist(); }
         function onFirewallZoneChanged() { root.requestPersist(); }
+        function onWolNicChanged() { root.requestPersist(); }
         function onServicesJsonChanged() { root.requestPersist(); }
         function onModeEnabledChanged() { root.requestPersist(); }
         function onChargeThresholdsEnabledChanged() { root.requestPersist(); }
@@ -367,48 +369,89 @@ PlasmoidItem {
     // fullRepresentation scope), so it passes clicks up through the
     // navigate(index) signal instead.
     //
-    // The Firewall TabButton is always visible (no more visibility toggling
-    // based on firewalld presence -- that approach left a non-collapsing
-    // blank gap in the ListView-based TabBar when firewalld was absent).
-    // Both the TabBar and StackLayout always keep all 6 children (same
-    // count, same order), so `tabs.currentIndex` (0..5) maps 1:1 onto
-    // StackLayout's positional children at all times.
-    //
-    // The StackLayout's FirewallTab child is deliberately NOT given a
-    // `visible:` binding here: StackLayout imperatively manages the
-    // `visible` property of its direct children itself (true only for the
-    // current index) whenever currentIndex changes, which would silently
-    // clear any QML binding we set on that same property. Instead,
-    // FirewallTab.qml hides its own content internally (a grandchild, not a
-    // direct StackLayout child, so no such conflict) and shows a "requires
-    // firewalld" hint in its place whenever status.firewall.zone is empty --
-    // see FirewallTab.qml.
+    // Visible tabs are config-driven (General settings page's "Visible tabs"
+    // checkboxes -> Plasmoid.configuration.show<Key>, default true -- see
+    // config/main.xml). `visibleTabs` below is the SINGLE shared model both
+    // the TabBar and the StackLayout are rendered from via Repeater, so
+    // index parity between them is automatic: a hidden tab is truly absent
+    // from both (no dead control, no blank-gap/StackLayout-visible-clobber
+    // issues like Task 5's hide-the-TabButton-only approach had). Overview
+    // is `always: true` -- there is no showOverview checkbox, it can't be
+    // hidden. Firewall stays in the model even when firewalld is absent;
+    // FirewallTab.qml already shows its own "requires firewalld" message
+    // internally for that case, so the tab is only hidden by its own
+    // checkbox, same as any other tab.
     fullRepresentation: ColumnLayout {
+        id: fullRep
         Layout.minimumWidth: Kirigami.Units.gridUnit * 20
         Layout.minimumHeight: Kirigami.Units.gridUnit * 18
         spacing: Kirigami.Units.smallSpacing
+
+        // Each entry directly reads its Plasmoid.configuration.show<X> flag
+        // (not via bracket-notation indirection) so QML's binding dependency
+        // tracking picks it up correctly: this property re-evaluates
+        // whenever any show* config key changes (e.g. after Apply/OK on the
+        // General settings page).
+        readonly property var allTabsData: [
+            { key: "overview", label: "Overview", always: true },
+            { key: "performance", label: "Performance", always: false, show: Plasmoid.configuration.showPerformance },
+            { key: "mode", label: "Mode", always: false, show: Plasmoid.configuration.showMode },
+            { key: "remote", label: "Remote Access", always: false, show: Plasmoid.configuration.showRemote },
+            { key: "services", label: "Services", always: false, show: Plasmoid.configuration.showServices },
+            { key: "firewall", label: "Firewall", always: false, show: Plasmoid.configuration.showFirewall }
+        ]
+
+        // The filtered model: recomputed automatically whenever allTabsData
+        // changes (see above). `show !== false` so an unset/undefined flag
+        // defaults to visible, matching main.xml's <default>true</default>.
+        readonly property var visibleTabs: allTabsData.filter(function(t) {
+            return t.always || t.show !== false;
+        })
+
+        // Maps a tab's `key` to its content Component. Kept out of
+        // allTabsData/visibleTabs (which stay plain, comparable data used
+        // for dependency tracking / filtering) and looked up here instead.
+        function componentForKey(key) {
+            switch (key) {
+            case "overview": return overviewComp;
+            case "performance": return performanceComp;
+            case "mode": return modeComp;
+            case "remote": return remoteComp;
+            case "services": return servicesComp;
+            case "firewall": return firewallComp;
+            }
+            return null;
+        }
+
+        // One Component per tab, each with `ctrl: root` set inline (so the
+        // Loader below never needs an onLoaded/item.ctrl-assignment step --
+        // the property is already bound at instantiation time).
+        Component { id: overviewComp; OverviewTab { ctrl: root; onNavigate: (i) => tabs.currentIndex = i } }
+        Component { id: performanceComp; PerformanceTab { ctrl: root } }
+        Component { id: modeComp; ModeTab { ctrl: root } }
+        Component { id: remoteComp; RemoteAccessTab { ctrl: root } }
+        Component { id: servicesComp; ServicesTab { ctrl: root } }
+        Component { id: firewallComp; FirewallTab { ctrl: root } }
 
         PlasmaComponents3.TabBar {
             id: tabs
             Layout.fillWidth: true
             currentIndex: 0
-            PlasmaComponents3.TabButton { text: "Overview" }
-            PlasmaComponents3.TabButton { text: "Performance" }
-            PlasmaComponents3.TabButton { text: "Mode" }
-            PlasmaComponents3.TabButton { text: "Remote Access" }
-            PlasmaComponents3.TabButton { text: "Services" }
-            PlasmaComponents3.TabButton { text: "Firewall" }
+            Repeater {
+                model: fullRep.visibleTabs
+                delegate: PlasmaComponents3.TabButton { text: modelData.label }
+            }
         }
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
             currentIndex: tabs.currentIndex
-            OverviewTab { ctrl: root; onNavigate: (i) => tabs.currentIndex = i }
-            PerformanceTab { ctrl: root }
-            ModeTab { ctrl: root }
-            RemoteAccessTab { ctrl: root }
-            ServicesTab { ctrl: root }
-            FirewallTab { ctrl: root }
+            Repeater {
+                model: fullRep.visibleTabs
+                delegate: Loader {
+                    sourceComponent: fullRep.componentForKey(modelData.key)
+                }
+            }
         }
     }
 }
