@@ -11,9 +11,17 @@
 #   those config-listed ids are valid (the built-in default is a fallback,
 #   not an addition).
 # - HARD, UNCONDITIONAL refusal regardless of config: "ssh", "22",
-#   "tailscale", "tailscale0" are NEVER acceptable app ids. This check runs
-#   BEFORE the config is even consulted, and config entries with one of
-#   these ids are also skipped defensively when building the table.
+#   "tailscale", "tailscale0" are NEVER acceptable app ids -- checked
+#   case-insensitively ("SSH", "Tailscale0", "TAILSCALE" etc. are refused
+#   exactly like the lowercase forms). This check runs BEFORE the config is
+#   even consulted, and config entries with one of these ids are also skipped
+#   defensively when building the table.
+# - Every port token from config (ports_tcp/ports_udp, single port or "lo-hi"
+#   range) is validated as a real 1-65535 port (both ends, lo<=hi) BEFORE it
+#   is ever spliced into a rich-rule string -- fail closed on anything else
+#   (malformed, out of range, overflowing digit strings, or rich-rule
+#   injection syntax). This runs in add_ports(), at the source, not merely as
+#   a numeric comparison after the fact.
 # - Defense in depth: in addition to the id whitelist, the resolved ports of
 #   the chosen rule(s) -- whether built-in or config-derived -- are checked:
 #   if port 22 is among them, the helper aborts immediately (no action).
@@ -43,12 +51,53 @@ case "$ACTION" in
 esac
 
 # --- Hard, unconditional refusal (checked BEFORE config is even read) --------
-case "$APP" in
+# Normalize to lowercase first so "SSH", "Tailscale0", "TAILSCALE" etc. are
+# refused exactly like the lowercase forms -- case must never be a bypass.
+case "${APP,,}" in
     ssh|22|tailscale|tailscale0)
         echo "ERROR: '$APP' is never a valid firewall app (hard refusal) -- aborted, no action" >&2
         exit 1
         ;;
 esac
+
+# --- Port-token validation (fail closed) --------------------------------------
+# valid_port_num <digit-string> -- true iff it is a real 1-65535 port number.
+# The length check (<=5 digits) runs BEFORE any arithmetic: an overflowing/
+# absurdly long digit string (e.g. "1-99999999999999999999999999") must never
+# reach `[ ... -le ... ]`, which can error out on values outside bash's signed
+# 64-bit range and silently fail to abort (fail-OPEN). Rejecting on length
+# first means we never evaluate arithmetic on anything that could overflow.
+# `10#` forces base-10 interpretation so a leading zero (e.g. "022") is never
+# misread as octal.
+valid_port_num() {
+    local n=$1
+    [[ "$n" =~ ^[0-9]{1,5}$ ]] || return 1
+    n=$((10#$n))
+    [ "$n" -ge 1 ] && [ "$n" -le 65535 ]
+}
+# valid_port_token <tok> -- true iff <tok> is a single valid port (1-65535) or
+# a "lo-hi" range with both ends valid ports and lo<=hi. Anything else
+# (malformed, empty, out of range, lo>hi, or any non-digit/hyphen character
+# such as embedded quotes from a rich-rule injection attempt) is invalid --
+# refused, not guessed. This is checked in add_ports() BEFORE a token is ever
+# spliced into a rich-rule string, so a config value like
+# `9999" family="ipv4` (an attempt to inject extra rich-rule clauses via
+# ports_tcp) is rejected at the source, not left to accidental rejection by
+# firewall-cmd's own parser.
+valid_port_token() {
+    local tok=$1 lo hi
+    if [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        lo=${BASH_REMATCH[1]}; hi=${BASH_REMATCH[2]}
+        valid_port_num "$lo" || return 1
+        valid_port_num "$hi" || return 1
+        [ $((10#$lo)) -le $((10#$hi)) ] || return 1
+    elif [[ "$tok" =~ ^[0-9]+$ ]]; then
+        valid_port_num "$tok" || return 1
+    else
+        return 1
+    fi
+    return 0
+}
 
 # --- App -> rich-rule table: config-driven, default fallback rdp+vnc ---------
 declare -a RULES=()
@@ -57,13 +106,20 @@ FOUND=0
 
 # add_ports <ports-string> <protocol> — ports-string may be a single port,
 # a "lo-hi" range, or a comma-separated list of either; appends one rule +
-# marker per token.
+# marker per token. Every token is validated (valid_port_token) BEFORE it is
+# spliced into the rule/marker strings -- an invalid token (malformed,
+# out-of-range, or carrying injection syntax) aborts the whole run immediately
+# (fail closed), it is never silently skipped or passed through.
 add_ports() {
     local ports=$1 proto=$2 tok
     IFS=',' read -ra __toks <<< "$ports"
     for tok in "${__toks[@]}"; do
         tok=$(printf '%s' "$tok" | tr -d '[:space:]')
         [ -z "$tok" ] && continue
+        if ! valid_port_token "$tok"; then
+            echo "ERROR: '$tok' is not a valid port (1-65535) or lo-hi range within 1-65535 -- aborted, no action (fail closed)" >&2
+            exit 1
+        fi
         RULES+=("rule port port=\"$tok\" protocol=\"$proto\" reject")
         MARKERS+=("port=\"$tok\"")
     done
@@ -81,8 +137,8 @@ if [ -n "$CFG_APPS_JSON" ]; then
         [ -z "$id" ] && continue
         # Defense in depth: a config entry can never define one of the
         # hard-refused ids either, even though $APP itself is already
-        # checked above.
-        case "$id" in
+        # checked above. Case-insensitive, same as the check above.
+        case "${id,,}" in
             ssh|22|tailscale|tailscale0) continue ;;
         esac
         if [ "$id" = "$APP" ]; then
@@ -109,14 +165,24 @@ fi
 
 # --- Defense-in-depth guard: port 22 (ssh) must NOT appear in any rule --------
 # Runs on EVERY resolved rule, config-derived or built-in alike -- no
-# exceptions, regardless of where the ports came from.
+# exceptions, regardless of where the ports came from. Tokens were already
+# validated in add_ports() above (so `ports` here is guaranteed a clean
+# number/range) -- this second, independent check (re-extracted straight from
+# the constructed rule string, re-validated from scratch) is deliberate
+# belt-and-suspenders: it must keep failing closed even if add_ports' guard
+# were ever weakened or bypassed by a future change.
 for r in "${RULES[@]}"; do
     ports=$(grep -oP 'port="\K[^"]+' <<<"$r")
     if [[ -z "$ports" ]] || ! [[ "$ports" =~ ^[0-9]+(-[0-9]+)?$ ]]; then
         echo "ERROR: port in rule not recognizable as a number/range -- aborted, no action (fail closed): $r" >&2
         exit 1
     fi
+    if ! valid_port_token "$ports"; then
+        echo "ERROR: port '$ports' is not a valid 1-65535 port (or lo<=hi range within 1-65535) -- aborted, no action (fail closed): $r" >&2
+        exit 1
+    fi
     lo=${ports%-*}; hi=${ports#*-}
+    lo=$((10#$lo)); hi=$((10#$hi))
     if [ "$lo" -le 22 ] && [ 22 -le "$hi" ]; then
         echo "ERROR: rule would affect port 22 (ssh) -- aborted, no action: $r" >&2
         exit 1

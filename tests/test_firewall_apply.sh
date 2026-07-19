@@ -63,6 +63,13 @@ for bad in ssh 22 tailscale tailscale0; do
     assert_eq "$(rich)" "$before" "block $bad (no config) did not change rich-rules"
 done
 
+# --- Case-insensitive hard refusal: uppercase/mixed-case ids must also be --
+#     refused (e.g. "SSH", not just "ssh") -- case is never a bypass.
+for bad in SSH TAILSCALE Tailscale0; do
+    sudo -n "$HELP" block "$bad" 2>/dev/null && { echo "FAIL: block $bad should have failed (case-insensitive hard refusal, no config)"; exit 1; }
+    assert_eq "$(rich)" "$before" "block $bad (no config) did not change rich-rules"
+done
+
 # --- Default whitelist (no config): rdp -- block -> marker, idempotent, ----
 #     allow -> marker gone
 sudo -n "$HELP" block rdp >/dev/null
@@ -82,10 +89,16 @@ assert_eq "$(marker 'port="5900-5903"')" "no" "vnc allow: marker gone again"
 
 # --- Config-driven custom app whitelist --------------------------------------
 # Includes a config entry that tries to (mis)define "ssh" as an app id, to
-# prove the hard refusal holds even against a config that attempts it, and
+# prove the hard refusal holds even against a config that attempts it,
 # "badapp" whose ports_tcp deliberately spans port 22 (must be refused by the
 # port-22 guard -- the guard runs on config-derived ports exactly like on
-# built-in ones).
+# built-in ones), and "inj" whose ports_tcp carries a rich-rule injection
+# payload (a stray `"` plus a bolted-on `family="ipv4"` clause) to prove a
+# malicious/corrupt config entry cannot splice extra clauses into the
+# firewall-cmd rich-rule string -- refused, no rule applied (see also Fix 1's
+# port-range validation and the readback-verification defense in depth in
+# msw-firewall-apply, which together stop this from ever reaching a rule
+# firewalld actually installs).
 mkdir -p "$CFG_DIR"
 cat > "$CFG_FILE" <<'JSON'
 {
@@ -93,7 +106,8 @@ cat > "$CFG_FILE" <<'JSON'
     "apps": [
       { "id": "ssh",    "ports_tcp": "12345" },
       { "id": "myapp",  "ports_tcp": "9999" },
-      { "id": "badapp", "ports_tcp": "20-25" }
+      { "id": "badapp", "ports_tcp": "20-25" },
+      { "id": "inj",    "ports_tcp": "9999\" family=\"ipv4" }
     ]
   }
 }
@@ -119,6 +133,11 @@ assert_eq "$(marker 'port="9999"')" "no" "myapp (config-driven) allow: marker go
 # --- Custom app "badapp" (ports_tcp "20-25" spans port 22): guard refuses --
 sudo -n "$HELP" block badapp 2>/dev/null && { echo "FAIL: 'badapp' (ports 20-25, spans 22) should have been refused by the port-22 guard"; exit 1; }
 assert_eq "$(rich)" "$before" "block badapp (config-derived ports spanning 22) did not change rich-rules"
+
+# --- Custom app "inj" (ports_tcp carries a rich-rule injection payload): ----
+#     refused, no rule applied (see comment above the config heredoc).
+sudo -n "$HELP" block inj 2>/dev/null && { echo "FAIL: 'inj' (ports_tcp rich-rule injection payload) should have been refused"; exit 1; }
+assert_eq "$(rich)" "$before" "block inj (rich-rule injection payload in ports_tcp) did not change rich-rules"
 
 # --- Final state: rich-rules match pre-test state (config restored by trap) -
 after=$(rich)

@@ -7,7 +7,6 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 . "$SCRIPT_DIR/msw-config"
 
 TAILNET_PREFIX="100."          # Tailscale CGNAT range 100.64.0.0/10
-BAT=/sys/class/power_supply/BAT0
 PSTATE=/sys/devices/system/cpu/intel_pstate
 GPU_DEV=/sys/bus/pci/devices/0000:01:00.0
 WOL_NIC=$(cfg_or_detect network.wol_nic detect_wol_nic)
@@ -71,6 +70,26 @@ NOTURBO=$(cat "$PSTATE/no_turbo" 2>/dev/null || echo 0)
 TURBO=$([ "$NOTURBO" = "0" ] && echo true || echo false)
 
 # --- Power / battery -----------------------------------------------------------
+# Generic detection (not hardcoded to BAT0, matching msw-mode/msw-charge-apply):
+# first /sys/class/power_supply/*/ whose `type` reads "Battery" and exposes a
+# `capacity` file, else the first BAT* directory. Empty if no battery exists
+# (e.g. a desktop) -- BATT stays null, everything else below degrades to "?".
+BAT=""
+for _d in /sys/class/power_supply/*/; do
+    [ -e "${_d}capacity" ] || continue
+    if [ "$(cat "${_d}type" 2>/dev/null)" = "Battery" ]; then
+        BAT=${_d%/}
+        break
+    fi
+done
+if [ -z "$BAT" ]; then
+    for _d in /sys/class/power_supply/BAT*/; do
+        [ -e "$_d" ] || continue
+        BAT=${_d%/}
+        break
+    done
+fi
+unset _d
 BATT=$(cat "$BAT/capacity" 2>/dev/null || echo null)
 CS=$(cat "$BAT/charge_control_start_threshold" 2>/dev/null || echo "?")
 CE=$(cat "$BAT/charge_control_end_threshold" 2>/dev/null || echo "?")
@@ -159,7 +178,7 @@ fw_app_ids() {
     if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
         local ids
         ids=$(jq -r '.firewall.apps // [] | .[].id // empty' "$MSW_CONFIG_FILE" 2>/dev/null \
-              | grep -vxE 'ssh|22|tailscale|tailscale0')
+              | grep -vixE 'ssh|22|tailscale|tailscale0')
         if [ -n "$ids" ]; then printf '%s\n' "$ids"; return; fi
     fi
     printf 'rdp\nvnc\n'
