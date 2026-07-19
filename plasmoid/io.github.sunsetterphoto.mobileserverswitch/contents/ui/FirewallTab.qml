@@ -1,27 +1,33 @@
 /*
  * "Firewall" tab: read-only status of the firewalld LAN zone
- * (status.firewall from msw-status --json) + per-app switches for the four
- * whitelisted apps (RDP/VNC/Sunshine/ComfyUI). Only the LAN zone
- * (TODO(task2): auto-detected LAN interfaces) is affected -- SSH and the
- * Tailnet (tailscale0, not assigned to any zone) are deliberately NOT
- * switchable and always stay reachable.
+ * (status.firewall from msw-status --json) + per-app switches for whichever
+ * apps are config-driven (config.firewall.apps -- default rdp+vnc, see
+ * msw-status/msw-firewall). Only the LAN zone (auto-detected LAN interfaces)
+ * is affected -- SSH and the Tailnet (tailscale0, not assigned to any zone)
+ * are deliberately NOT switchable and always stay reachable.
+ *
+ * The app rows are rendered entirely from ctrl.status.firewall.apps (an
+ * object keyed by app id, each value {blocked,label,ports} -- see
+ * msw-status), NOT a hardcoded list: whatever the backend's config-driven
+ * whitelist currently is, is exactly what shows up here, so there are never
+ * dead controls for apps the backend would reject.
  *
  * Switching goes exclusively through ctrl.firewallCmd("block|allow <app>")
  * (msw-firewall, the privileged helper enforces the LAN restriction). No bare
  * root/exec access: this file doesn't see `root`/`exec` from main.qml (no
  * global scope between separate .qml files).
  *
- * Graceful degradation: the Firewall TabButton in main.qml is hidden
- * whenever firewalld isn't present (root.firewallAvailable), so this tab is
- * normally unreachable in that case. As a defence-in-depth fallback (e.g. if
- * firewalld happens to disappear while this tab is already selected), all
- * the actual firewall content below is wrapped in an inner `available`
- * ColumnLayout instead of being bound directly on this file's root item --
- * this root ColumnLayout is StackLayout's direct child in main.qml, and
- * StackLayout manages its direct children's `visible` property itself
- * (imperatively, based on currentIndex), which would silently clear any
- * `visible:` binding set here at this level. The inner ColumnLayout is a
- * grandchild instead, so no such conflict applies.
+ * Graceful degradation: the Firewall TabButton in main.qml is always visible
+ * (no more hide-the-tab -- that left a non-collapsing blank gap in the
+ * ListView-based TabBar when firewalld was absent). Instead, this tab itself
+ * shows a clear "requires firewalld" message in place of the firewall
+ * content whenever status.firewall.zone is empty/null -- same visibility
+ * pattern as before (an inner `available` ColumnLayout, not bound directly
+ * on this file's root item): this root ColumnLayout is StackLayout's direct
+ * child in main.qml, and StackLayout manages its direct children's `visible`
+ * property itself (imperatively, based on currentIndex), which would
+ * silently clear any `visible:` binding set here at this level. The inner
+ * ColumnLayout is a grandchild instead, so no such conflict applies.
  */
 import QtQuick
 import QtQuick.Layouts
@@ -44,17 +50,13 @@ ColumnLayout {
     // missing or firewalld isn't running -- see msw-status).
     readonly property bool available: !!firewallTab.fw.zone
 
-    function appBlocked(id) {
-        return !!(fw.apps && fw.apps[id] && fw.apps[id].blocked);
-    }
+    // App ids present in the config-driven status (object keys of
+    // status.firewall.apps), sorted for a stable display order.
+    readonly property var appIds: Object.keys(firewallTab.fw.apps || {}).sort()
 
-    // The four whitelisted apps switchable via msw-firewall.
-    readonly property var apps: [
-        { id: "rdp",      label: "RDP",      detail: ":3389" },
-        { id: "vnc",      label: "VNC",      detail: ":5900-5903" },
-        { id: "sunshine", label: "Sunshine", detail: ":47984-48010" },
-        { id: "comfyui",  label: "ComfyUI",  detail: ":8188" }
-    ]
+    function appEntry(id) {
+        return (firewallTab.fw.apps && firewallTab.fw.apps[id]) || ({ blocked: false, label: id, ports: "" });
+    }
 
     // Reusable status dot: green = allowed, dimmed = blocked.
     // (visually identical to RemoteAccessTab.StatusDot -- no shared scope
@@ -67,15 +69,14 @@ ColumnLayout {
         color: on ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.disabledTextColor
     }
 
-    // Fallback hint: only reachable if this tab was already selected when
-    // firewalld disappeared (the TabButton itself is hidden by main.qml).
+    // Fallback hint: firewalld isn't present on this system at all.
     PlasmaComponents3.Label {
         Layout.fillWidth: true
         visible: !firewallTab.available
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignHCenter
         opacity: 0.7
-        text: "Firewall (firewalld) is not available on this system."
+        text: "Firewall control requires firewalld (not detected on this system)."
     }
 
     ColumnLayout {
@@ -132,24 +133,36 @@ ColumnLayout {
 
         Kirigami.Separator { Layout.fillWidth: true }
 
-        // --- B. App blocks (the four whitelisted apps) -------------------------
+        // --- B. App blocks (config-driven -- see msw-status/msw-firewall) ------
+        PlasmaComponents3.Label {
+            Layout.fillWidth: true
+            visible: firewallTab.appIds.length === 0
+            wrapMode: Text.WordWrap
+            opacity: 0.7
+            font: Kirigami.Theme.smallFont
+            text: "No firewall-switchable apps configured."
+        }
+
         Repeater {
-            model: firewallTab.apps
+            model: firewallTab.appIds
 
             delegate: RowLayout {
                 id: appRow
-                required property var modelData
+                required property string modelData
+                readonly property var entry: firewallTab.appEntry(modelData)
+                readonly property bool blocked: !!entry.blocked
+
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
-
-                readonly property bool blocked: firewallTab.appBlocked(modelData.id)
 
                 StatusDot { on: !appRow.blocked }
 
                 ColumnLayout {
                     spacing: 0
                     Layout.fillWidth: true
-                    PlasmaComponents3.Label { text: appRow.modelData.label + " " + appRow.modelData.detail }
+                    PlasmaComponents3.Label {
+                        text: appRow.entry.label + (appRow.entry.ports ? " :" + appRow.entry.ports : "")
+                    }
                     PlasmaComponents3.Label {
                         text: appRow.blocked ? "LAN: blocked" : "LAN: allowed"
                         opacity: 0.7
@@ -160,7 +173,7 @@ ColumnLayout {
                 PlasmaComponents3.Button {
                     text: appRow.blocked ? "allow" : "block"
                     icon.name: appRow.blocked ? "dialog-ok" : "network-disconnect"
-                    onClicked: ctrl.firewallCmd((appRow.blocked ? "allow " : "block ") + appRow.modelData.id)
+                    onClicked: ctrl.firewallCmd((appRow.blocked ? "allow " : "block ") + appRow.modelData)
                 }
             }
         }

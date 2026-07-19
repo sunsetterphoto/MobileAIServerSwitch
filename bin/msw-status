@@ -206,6 +206,29 @@ fw_app_ports() {
     printf '%s %s' "$ptcp" "$pudp"
 }
 
+# fw_app_label <id> — human display label for an app id: known ids get a
+# proper acronym/name, anything else is Title-Cased with -/_ treated as word
+# separators (e.g. "my-app" -> "My App"). Purely id-derived -- config has no
+# separate "label" field for firewall.apps (see design spec §2a).
+fw_app_label() {
+    local id=$1
+    case "$id" in
+        rdp) echo "RDP" ;;
+        vnc) echo "VNC" ;;
+        *) echo "$id" | tr '_-' '  ' \
+               | awk '{for (i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2); print}' ;;
+    esac
+}
+
+# fw_ports_human <ports_tcp> <ports_udp> — human-readable "<ports>/tcp[, <ports>/udp]"
+# string for display, e.g. "3389/tcp" or "5900-5903/tcp".
+fw_ports_human() {
+    local ptcp=$1 pudp=$2 parts=()
+    [ -n "$ptcp" ] && parts+=("${ptcp}/tcp")
+    [ -n "$pudp" ] && parts+=("${pudp}/udp")
+    local IFS=,; echo "${parts[*]}"
+}
+
 FW_APPS="{}"
 while IFS= read -r fw_id; do
     [ -z "$fw_id" ] && continue
@@ -215,7 +238,11 @@ while IFS= read -r fw_id; do
         [ -z "$fw_tok" ] && continue
         grep -qF "port=\"$fw_tok\"" <<<"$FW_RICH" && fw_blocked=true
     done
-    FW_APPS=$(jq --arg id "$fw_id" --argjson blocked "$fw_blocked" '. + {($id): {blocked: $blocked}}' <<<"$FW_APPS")
+    fw_label=$(fw_app_label "$fw_id")
+    fw_ports=$(fw_ports_human "$fw_ptcp" "$fw_pudp")
+    FW_APPS=$(jq --arg id "$fw_id" --argjson blocked "$fw_blocked" \
+                 --arg label "$fw_label" --arg ports "$fw_ports" \
+                 '. + {($id): {blocked: $blocked, label: $label, ports: $ports}}' <<<"$FW_APPS")
 done < <(fw_app_ids)
 
 if [ -n "$FW_IFACES_RAW" ]; then
@@ -239,6 +266,19 @@ RDP_ACTIVE=$(svc_active_user app-org.kde.krdpserver.service)
 [ "$RDP_ACTIVE" = false ] && RDP_ACTIVE=$(port_active 3389)
 VNC_INST=$( (command -v krfb >/dev/null 2>&1 || command -v wayvnc >/dev/null 2>&1) && echo true || echo false)
 VNC_ACTIVE=$(port_active 5900)
+
+# --- Sunshine: installed status (mirrors RDP_INST/VNC_INST above) --------------
+# Sunshine ships either as a native package (binary on PATH) or as a flatpak
+# (no binary on PATH, but its systemd --user unit file is always installed by
+# either packaging, since the unit ships the same "app-dev.lizardbyte.app.
+# Sunshine.service" name regardless of install method -- verified on a native
+# install: `systemctl --user list-unit-files` lists it even though `sunshine`
+# is also on PATH there). Checking the unit-file listing (not just `command -v
+# sunshine`) means a flatpak-only install is still detected as installed, even
+# though `sunshine` never appears on PATH in that case.
+SUN_INST=$(command -v sunshine >/dev/null 2>&1 && echo true \
+    || (systemctl --user list-unit-files 2>/dev/null \
+        | grep -q '^app-dev\.lizardbyte\.app\.Sunshine\.service' && echo true || echo false))
 
 # --- Services array (config-driven) --------------------------------------------
 # Built entirely from config.services (~/.config/mobileserverswitch/config.json);
@@ -280,7 +320,7 @@ jq -n \
   --arg profile "$PROFILE" --argjson mpp "$MPP" --argjson turbo "$TURBO" \
   --argjson batt "${BATT:-null}" --arg charge "$CS/$CE" --arg bstatus "$BSTATUS" --argjson ac "$AC" \
   --argjson ssh_active "$(port_active 22)" --arg ssh_exp "$(exposure_for_port 22)" \
-  --argjson sun_active "$(port_active 47989)" --arg sun_exp "$(exposure_for_port 47989)" \
+  --argjson sun_active "$(port_active 47989)" --arg sun_exp "$(exposure_for_port 47989)" --argjson sun_inst "$SUN_INST" \
   --argjson ts_active "$TS_ACTIVE" --arg ts_ip4 "$TS_IP4" --arg ts_host "${TS_HOST:-?}" --argjson ts_peers "$TS_PEERS" \
   --argjson kdc_active "$(port_active 1716)" \
   --argjson rdp_inst "$RDP_INST" --argjson rdp_active "$RDP_ACTIVE" \
@@ -300,7 +340,7 @@ jq -n \
     firewall:$firewall,
     remote:{
       ssh:{active:$ssh_active,port:22,exposure:$ssh_exp},
-      sunshine:{active:$sun_active,port:47989,exposure:$sun_exp},
+      sunshine:{installed:$sun_inst,active:$sun_active,port:47989,exposure:$sun_exp},
       tailscale:{active:$ts_active,ip4:$ts_ip4,host:$ts_host,peers:$ts_peers},
       kdeconnect:{active:$kdc_active,port:1716},
       rdp:{installed:$rdp_inst,active:$rdp_active},
