@@ -26,7 +26,7 @@ valid_apps() {
     local ids=""
     if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
         ids=$(jq -r '.firewall.apps // [] | .[].id // empty' "$MSW_CONFIG_FILE" 2>/dev/null \
-              | grep -vxE 'ssh|22|tailscale|tailscale0')
+              | grep -vixE 'ssh|22|tailscale|tailscale0')
     fi
     if [ -n "$ids" ]; then
         printf '%s\n' "$ids"
@@ -41,8 +41,10 @@ case "${1:-}" in
         app=${2:?Usage: msw-firewall $1 <app>}
         # Hard, unconditional refusal — checked before the config whitelist
         # even runs, so these ids are rejected even if config parsing failed
-        # open for some reason.
-        case "$app" in
+        # open for some reason. Normalized to lowercase first so "SSH",
+        # "Tailscale0", "TAILSCALE" etc. are refused too — case is never a
+        # bypass.
+        case "${app,,}" in
             ssh|22|tailscale|tailscale0)
                 echo "Unknown app: $app (never a valid firewall app)" >&2; exit 2 ;;
         esac
