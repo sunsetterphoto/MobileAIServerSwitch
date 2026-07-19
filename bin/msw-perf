@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# msw-perf — performance axis (independent of server/laptop mode).
+#   msw-perf power-saver|balanced|performance   preset: profile + cap + turbo
+#   msw-perf pct <16..100>                        fine CPU cap only
+#   msw-perf band <profile>                       "min max target turbo" (one source of truth)
+# Presets use the PowerProfiles D-Bus (KDE-synced); the cap goes through
+# the privileged helper msw-perf-apply.
+set -uo pipefail
+APPLY=/usr/local/sbin/msw-perf-apply
+BAND_TOL=8   # +/- % around the target value (for the widget highlight)
+
+# Central band definition: profile -> target% turbo
+band() {  # echo "<lo> <hi> <target> <on|off>"
+    local p=$1 t to
+    case "$p" in
+        power-saver) t=40; to=off ;;
+        balanced)    t=70; to=on  ;;
+        performance) t=100; to=on ;;
+        *) echo "unknown profile: $p" >&2; return 2 ;;
+    esac
+    local lo=$((t-BAND_TOL)) hi=$((t+BAND_TOL))
+    [ "$lo" -lt 16 ] && lo=16; [ "$hi" -gt 100 ] && hi=100
+    echo "$lo $hi $t $to"
+}
+
+set_profile() {  # D-Bus, no root
+    busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+        /org/freedesktop/UPower/PowerProfiles \
+        org.freedesktop.UPower.PowerProfiles ActiveProfile "s" "$1" 2>/dev/null \
+        || echo "WARNING: PowerProfiles ActiveProfile=$1 not set (Polkit/session?)" >&2
+}
+
+apply_pct() { sudo -n "$APPLY" "$1" "$2"; }   # $1=pct $2=on|off
+
+case "${1:-}" in
+    power-saver|balanced|performance)
+        read -r _ _ tgt to <<<"$(band "$1")"
+        set_profile "$1"
+        apply_pct "$tgt" "$to"
+        ;;
+    pct)
+        pct=${2:?Usage: msw-perf pct <16..100>}
+        # keep current turbo state
+        nt=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo 0)
+        to=$([ "$nt" = 0 ] && echo on || echo off)
+        apply_pct "$pct" "$to"
+        ;;
+    band)
+        band "${2:?Usage: msw-perf band <profile>}"
+        ;;
+    ""|-h|--help|help)
+        sed -n '2,7p' "$0" | sed 's/^# \?//'
+        ;;
+    *) echo "Unknown: $1" >&2; exit 2 ;;
+esac

@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# msw-mode — operating-mode switch for Mobile Server Switch
+#
+#   msw-mode server   permanent operation / remote-desktop server (default)
+#   msw-mode laptop   mobile normal operation
+#   msw-mode status   show current state
+#
+# Single source of truth for the mode switch. All .desktop launchers and the
+# plasmoid exclusively call this script.
+#
+# All config keys are verified against the Plasma 6 source (KDE upstream):
+#   powerdevil     PowerDevilProfileSettings.kcfg + daemon/powerdevilenums.h
+#   kscreenlocker  settings/kscreenlockersettings.kcfg
+
+set -uo pipefail
+
+# State is deliberately NOT under ~/.local/state: the system unit
+# msw-charge-thresholds.service reads it at boot and must not depend on a
+# user home being available.
+STATE_FILE=/var/lib/mobileserverswitch/mode
+BAT=/sys/class/power_supply/BAT0
+
+# PowerDevil action values (daemon/powerdevilenums.h)
+readonly ACT_NONE=0 ACT_SLEEP=1 ACT_SHUTDOWN=8 ACT_PROMPT=16
+
+log()  { printf '%s\n' "$*"; logger -t msw-mode "$*" 2>/dev/null || true; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; logger -t msw-mode -p user.warning "$*" 2>/dev/null || true; }
+
+# --- Persist mode + apply charge thresholds (privileged) ----------------------
+# The actual sysfs logic lives in /usr/local/sbin/msw-charge-apply, so the boot
+# unit and the mode switch guarantee the same values (one source of truth).
+persist_and_charge() {
+    local mode=$1
+    if ! sudo -n true 2>/dev/null; then
+        warn "sudo required for charge thresholds - mode NOT persisted, thresholds unchanged"
+        return 1
+    fi
+    printf '%s\n' "$mode" | sudo -n tee "$STATE_FILE" >/dev/null
+    sudo -n /usr/local/sbin/msw-charge-apply | sed 's/^/  /'
+}
+
+# --- PowerDevil ---------------------------------------------------------------
+pd() {  # pd <group> <key> <value> [type]
+    local grp=$1 key=$2 val=$3 type=${4:-}
+    if [ -n "$type" ]; then
+        kwriteconfig6 --file powerdevilrc --group "$PROFILE" --group "$grp" --key "$key" --type "$type" "$val"
+    else
+        kwriteconfig6 --file powerdevilrc --group "$PROFILE" --group "$grp" --key "$key" "$val"
+    fi
+}
+
+set_powerdevil() {
+    local lid=$1 pwrbtn=$2 pwrdown=$3 autosusp=$4 autosusp_t=$5 dpms=$6 dpms_t=$7 dim=$8 dim_t=$9
+    for PROFILE in AC Battery LowBattery; do
+        pd Display            TurnOffDisplayWhenIdle       "$dpms" bool
+        pd Display            TurnOffDisplayIdleTimeoutSec "$dpms_t"
+        pd Display            DimDisplayWhenIdle           "$dim"  bool
+        pd Display            DimDisplayIdleTimeoutSec     "$dim_t"
+        pd SuspendAndShutdown LidAction                    "$lid"
+        pd SuspendAndShutdown PowerButtonAction            "$pwrbtn"
+        pd SuspendAndShutdown PowerDownAction              "$pwrdown"
+        pd SuspendAndShutdown AutoSuspendAction            "$autosusp"
+        pd SuspendAndShutdown AutoSuspendIdleTimeoutSec    "$autosusp_t"
+    done
+    # refreshStatus, NOT reparseConfiguration: the latter only reloads
+    # GlobalSettings, not the profile keys (powerdevilcore.cpp).
+    busctl --user call org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement \
+        org.kde.Solid.PowerManagement refreshStatus >/dev/null 2>&1 \
+        || warn "PowerDevil refreshStatus failed - change takes effect only after next login"
+}
+
+# --- Screen locker --------------------------------------------------------------
+set_locker() {  # set_locker <autolock> <timeout_min>
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key LockOnStart     --type bool true
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key LockOnResume    --type bool true
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key RequirePassword --type bool true
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key LockGrace       0
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock        --type bool "$1"
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key Timeout         "$2"
+    busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 \
+        || warn "kwin reconfigure failed"
+}
+
+# --- Services -------------------------------------------------------------------
+# ON_DEMAND: never start automatically - the user starts them deliberately
+#   (also possible via SSH). Sunshine keeps the dGPU awake permanently via
+#   NVENC (measured: 0 ms sleep). The integrated GPU can't encode H.264/HEVC
+#   (only JPEG), so there is no alternative that would let the dGPU sleep.
+#   Hence: no autostart.
+#   Start manually: systemctl --user start app-dev.lizardbyte.app.Sunshine
+ON_DEMAND_UNITS=(
+    app-dev.lizardbyte.app.Sunshine.service
+)
+
+# HEAVY: run in server mode, sleep in laptop mode.
+# TODO(task3): populate from config.mode.stop_on_laptop instead of hardcoding.
+HEAVY_UNITS=()
+
+svc() {  # svc start|stop <unit...>
+    local action=$1; shift
+    local u
+    for u in "$@"; do
+        systemctl --user list-unit-files "$u" &>/dev/null || continue
+        systemctl --user cat "$u" &>/dev/null || { log "  $u: not installed - skipped"; continue; }
+        if systemctl --user "$action" "$u" 2>/dev/null; then
+            log "  $u: $action"
+        else
+            warn "$u: $action failed"
+        fi
+    done
+}
+
+# --- Modes ------------------------------------------------------------------------
+mode_server() {
+    log "Switching to SERVER mode ..."
+    # Lid/power button: all NoAction. Note: PowerDevil's HandleButtonEvents only
+    # loads if ALL three actions are != NoAction - here deliberately fully
+    # inactive (power button has no Plasma function).
+    set_powerdevil "$ACT_NONE" "$ACT_NONE" "$ACT_NONE" "$ACT_NONE" 0 false 0 false 0
+    log "  Lid: ignore | Screen: never off | Auto-suspend: never"
+    set_locker true 15
+    log "  Lock: on start + after 15 min idle"
+    persist_and_charge server
+    svc start "${HEAVY_UNITS[@]}"
+    log "SERVER mode active. (Sunshine does NOT start automatically - deliberately on demand)"
+}
+
+mode_laptop() {
+    log "Switching to LAPTOP mode ..."
+    set_powerdevil "$ACT_SLEEP" "$ACT_PROMPT" "$ACT_SHUTDOWN" "$ACT_SLEEP" 1800 true 600 true 300
+    log "  Lid: suspend | Screen: off after 10 min | Auto-suspend: 30 min"
+    set_locker true 5
+    log "  Lock: on start + after 5 min idle + on wake"
+    # 0/100 = factory behavior: charge fully for travel / to run battery cycles
+    persist_and_charge laptop
+    svc stop "${HEAVY_UNITS[@]}" "${ON_DEMAND_UNITS[@]}"
+    log "LAPTOP mode active."
+}
+
+mode_status() {
+    local saved="unknown"
+    [ -r "$STATE_FILE" ] && saved=$(cat "$STATE_FILE")
+    echo "Saved mode: $saved"
+    echo
+    echo "--- Current state ---"
+    if [ -r "$BAT/charge_control_start_threshold" ]; then
+        echo "Charge thresholds:  $(cat $BAT/charge_control_start_threshold)/$(cat $BAT/charge_control_end_threshold)  (battery: $(cat $BAT/capacity)%, $(cat $BAT/status))"
+    fi
+    local p; p=$(busctl --user call org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement \
+        org.kde.Solid.PowerManagement currentProfile 2>/dev/null | sed 's/^s "//;s/"$//')
+    echo "PowerDevil profile: ${p:-?}"
+    echo "  LidAction:              $(kreadconfig6 --file powerdevilrc --group "${p:-AC}" --group SuspendAndShutdown --key LidAction --default '(default)')"
+    echo "  TurnOffDisplayWhenIdle: $(kreadconfig6 --file powerdevilrc --group "${p:-AC}" --group Display --key TurnOffDisplayWhenIdle --default '(default)')"
+    echo "  AutoSuspendAction:      $(kreadconfig6 --file powerdevilrc --group "${p:-AC}" --group SuspendAndShutdown --key AutoSuspendAction --default '(default)')"
+    echo "Locker:"
+    echo "  LockOnStart: $(kreadconfig6 --file kscreenlockerrc --group Daemon --key LockOnStart --default '(default false)')"
+    echo "  Autolock:    $(kreadconfig6 --file kscreenlockerrc --group Daemon --key Autolock --default '(default true)')"
+    echo "  Timeout:     $(kreadconfig6 --file kscreenlockerrc --group Daemon --key Timeout --default '(default 5)') min"
+    echo "  locked:      $(loginctl show-session "$(loginctl list-sessions --no-legend | awk '$4=="seat0"{print $1;exit}')" -p LockedHint --value 2>/dev/null || echo '?')"
+    echo "logind:"
+    echo "  HandleLidSwitch: $(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager HandleLidSwitch 2>/dev/null | sed 's/^s //')"
+    echo "Services:"
+    local u
+    for u in "${ON_DEMAND_UNITS[@]}" "${HEAVY_UNITS[@]}"; do
+        if systemctl --user cat "$u" &>/dev/null; then
+            echo "  $u: $(systemctl --user is-active "$u" 2>&1)"
+        else
+            echo "  $u: not installed"
+        fi
+    done
+    echo "Network:"
+    # Look up 'metric' by label rather than field index - ip-route output has a
+    # varying number of fields depending on protocol/source.
+    echo "  Default route: $(ip route | awk '/^default/{m="?"; for(i=1;i<=NF;i++) if($i=="metric") m=$(i+1); print $5" (metric "m")"; exit}')"
+    local carrier wol
+    # TODO(task2): auto-detect (wired default-route interface) instead of hardcoding
+    carrier=$(cat /sys/class/net/enp11s0/carrier 2>/dev/null || echo '?')
+    # '^[[:space:]]*Wake-on:' - otherwise it would also match the 'Supports Wake-on:' line
+    wol=$(sudo -n ethtool enp11s0 2>/dev/null | awk '/^[[:space:]]*Wake-on:/{print $2; exit}')
+    if [ "$carrier" = "1" ]; then
+        echo "  WoL:           ${wol:-?}  (cable plugged in)"
+    else
+        echo "  WoL:           ${wol:-?}  (NO CABLE - WoL has no effect, value is only the driver default)"
+    fi
+}
+
+# --- main ---------------------------------------------------------------------
+MODE="${1:-status}"
+case "$MODE" in
+    server) mode_server ;;
+    laptop) mode_laptop ;;
+    status|"") mode_status ;;
+    -h|--help|help)
+        sed -n '2,12p' "$0" | sed 's/^# \?//'
+        ;;
+    *)
+        echo "Unknown mode: $MODE" >&2
+        echo "Usage: msw-mode {server|laptop|status}" >&2
+        exit 2
+        ;;
+esac

@@ -1,0 +1,12 @@
+[Unit]
+Description=Set battery charge thresholds according to the msw-mode state
+After=multi-user.target
+ConditionPathExists=/sys/class/power_supply/BAT0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/msw-charge-apply
+
+[Install]
+WantedBy=multi-user.target

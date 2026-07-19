@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# msw-power — radio/power switches (dGPU runtime, WiFi, Bluetooth, EPP, ASPM, WoL).
+#   msw-power gpu keep|auto      dGPU runtime PM: keep=stay awake, auto=autosuspend
+#   msw-power wifi on|off        WiFi via rfkill
+#   msw-power bt on|off          Bluetooth via rfkill
+#   msw-power epp <pref>         Energy Performance Preference (default/performance/
+#                                 balance_performance/balance_power/power)
+#   msw-power aspm <policy>      PCIe ASPM policy (default/performance/powersave/powersupersave)
+#   msw-power wol on|off         Wake-on-LAN (magic packet) on the LAN NIC
+# Thin wrapper: validates the coarse shape, delegates to the privileged helper
+# msw-power-apply (sudo -n). Fine validation (available values etc.) is done
+# by the helper.
+set -uo pipefail
+APPLY=/usr/local/sbin/msw-power-apply
+
+apply() { sudo -n "$APPLY" "$1" "$2"; }   # $1=what $2=value
+
+usage() { sed -n '2,9p' "$0" | sed 's/^# \?//'; }
+
+case "${1:-}" in
+    gpu)
+        v=${2:?Usage: msw-power gpu keep|auto}
+        case "$v" in keep|auto) apply gpu "$v" ;; *) echo "gpu: expected keep|auto" >&2; exit 2 ;; esac
+        ;;
+    wifi)
+        v=${2:?Usage: msw-power wifi on|off}
+        case "$v" in on|off) apply wifi "$v" ;; *) echo "wifi: expected on|off" >&2; exit 2 ;; esac
+        ;;
+    bt)
+        v=${2:?Usage: msw-power bt on|off}
+        case "$v" in on|off) apply bt "$v" ;; *) echo "bt: expected on|off" >&2; exit 2 ;; esac
+        ;;
+    epp)
+        v=${2:?Usage: msw-power epp <pref>}
+        apply epp "$v"
+        ;;
+    aspm)
+        v=${2:?Usage: msw-power aspm <policy>}
+        apply aspm "$v"
+        ;;
+    wol)
+        v=${2:?Usage: msw-power wol on|off}
+        case "$v" in on|off) apply wol "$v" ;; *) echo "wol: expected on|off" >&2; exit 2 ;; esac
+        ;;
+    ""|-h|--help|help)
+        usage
+        ;;
+    *) echo "Unknown: $1" >&2; exit 2 ;;
+esac

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# msw-firewall — block/allow LAN access per app (firewalld, default zone).
+# Fixed app->port whitelist (see msw-firewall-apply):
+# rdp, vnc, sunshine, comfyui. NOTHING ELSE — in particular NEVER ssh/tailscale.
+#   msw-firewall block <app>    block LAN access to <app> via a reject rule
+#   msw-firewall allow <app>    lift the block again
+#   msw-firewall status         current rich-rules of the zone (read-only)
+# Thin wrapper: validates the coarse shape, delegates to the privileged helper
+# msw-firewall-apply (sudo -n). Fine validation (whitelist, ssh block) is done
+# exclusively by the helper — this wrapper never passes anything through unfiltered.
+set -uo pipefail
+APPLY=/usr/local/sbin/msw-firewall-apply
+ZONE=FedoraWorkstation   # TODO(task2): auto-detect (firewall-cmd --get-default-zone)
+
+usage() { sed -n '2,10p' "$0" | sed 's/^# \?//'; }
+
+case "${1:-}" in
+    block|allow)
+        action=$1
+        app=${2:?Usage: msw-firewall $1 <rdp|vnc|sunshine|comfyui>}
+        case "$app" in
+            rdp|vnc|sunshine|comfyui) ;;
+            *) echo "Unknown app: $app (allowed: rdp|vnc|sunshine|comfyui)" >&2; exit 2 ;;
+        esac
+        sudo -n "$APPLY" "$action" "$app"
+        ;;
+    status)
+        firewall-cmd --zone="$ZONE" --list-rich-rules
+        ;;
+    ""|-h|--help|help)
+        usage
+        ;;
+    *) echo "Unknown: $1" >&2; exit 2 ;;
+esac

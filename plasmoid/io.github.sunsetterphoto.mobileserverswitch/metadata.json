@@ -1,0 +1,20 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Id": "io.github.sunsetterphoto.mobileserverswitch",
+        "Name": "Mobile Server Switch",
+        "Description": "Control and status center for running a laptop as a mobile server: mode, performance/power, remote access, services, firewall",
+        "Icon": "network-server",
+        "Category": "System Information",
+        "Authors": [
+            {
+                "Name": "sunsetterphoto",
+                "Email": "sunsetterphoto@users.noreply.github.com"
+            }
+        ],
+        "License": "MIT",
+        "Version": "1.0",
+        "EnabledByDefault": true
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Sets/removes LAN-block rules (firewalld rich-rules) for individual apps.
+# Caller: msw-firewall. Runs as root. Usage: msw-firewall-apply <block|allow> <app>.
+#
+# SECURITY (see .superpowers/specs/2026-07-18-mobileserverswitch-design.md §15-B):
+# - Fixed app->rule whitelist below (case "$APP" ...). ONLY rdp/vnc/sunshine/comfyui.
+#   Anything else (in particular "ssh"/"22"/"tailscale") falls through the
+#   whitelist, resulting in an error message + exit != 0, WITHOUT any firewall action.
+# - Defense in depth: in addition to the whitelist, the resolved ports of the
+#   chosen rule(s) are checked -- if port 22 is among them, the helper aborts
+#   immediately (no action). This also catches future typos in the table below.
+# - Only the LAN zone (TODO(task2): auto-detect the default zone instead of the
+#   fixed name below). Never touches interfaces/zones otherwise, never touches
+#   tailscale0 (zoneless -> Tailnet access always stays reachable, independent
+#   of this zone).
+# - No --reload (could briefly disrupt running connections). Each rule is set/
+#   removed separately for runtime AND --permanent.
+# - Every branch: resolve -> check guard -> set/remove -> verify via
+#   --list-rich-rules readback -> report success, otherwise exit != 0 with a
+#   clear message (no silent partial state).
+set -uo pipefail
+ZONE=FedoraWorkstation   # TODO(task2): auto-detect (firewall-cmd --get-default-zone)
+
+ACTION=${1:?Usage: msw-firewall-apply <block|allow> <app>}
+APP=${2:?Usage: msw-firewall-apply <block|allow> <app>}
+
+case "$ACTION" in
+    block|allow) ;;
+    *) echo "Unknown action: $ACTION (allowed: block|allow)" >&2; exit 2 ;;
+esac
+
+# --- Fixed app -> rich-rule whitelist (RULES) + readback markers (MARKERS) ----
+# 1:1 correspondence. Exactly these 4 apps, nothing else.
+declare -a RULES=()
+declare -a MARKERS=()
+case "$APP" in
+    rdp)
+        RULES=('rule port port="3389" protocol="tcp" reject')
+        MARKERS=('port="3389".*reject')
+        ;;
+    vnc)
+        RULES=('rule port port="5900-5903" protocol="tcp" reject')
+        MARKERS=('port="5900-5903"')
+        ;;
+    sunshine)
+        RULES=(
+            'rule port port="47984-48010" protocol="tcp" reject'
+            'rule port port="47998-48000" protocol="udp" reject'
+        )
+        MARKERS=('port="47984-48010"' 'port="47998-48000"')
+        ;;
+    comfyui)
+        RULES=('rule port port="8188" protocol="tcp" reject')
+        MARKERS=('port="8188"')
+        ;;
+    *)
+        echo "Unknown app: $APP (allowed: rdp|vnc|sunshine|comfyui) -- no action." >&2
+        exit 2
+        ;;
+esac
+
+# --- Defense-in-depth guard: port 22 (ssh) must NOT appear in any rule --------
+for r in "${RULES[@]}"; do
+    ports=$(grep -oP 'port="\K[^"]+' <<<"$r")
+    if [[ -z "$ports" ]] || ! [[ "$ports" =~ ^[0-9]+(-[0-9]+)?$ ]]; then
+        echo "ERROR: port in rule not recognizable as a number/range -- aborted, no action (fail closed): $r" >&2
+        exit 1
+    fi
+    lo=${ports%-*}; hi=${ports#*-}
+    if [ "$lo" -le 22 ] && [ 22 -le "$hi" ]; then
+        echo "ERROR: rule would affect port 22 (ssh) -- aborted, no action: $r" >&2
+        exit 1
+    fi
+done
+
+# --- Set/remove: runtime + permanent separately, no --reload ------------------
+# firewall-cmd returns a warning + exit!=0 for an already-present/missing rule
+# (ALREADY_ENABLED / NOT_ENABLED) -- that's idempotence for us, not an error.
+# Truth is exclusively the readback verification below.
+VERB=add; [ "$ACTION" = allow ] && VERB=remove
+for r in "${RULES[@]}"; do
+    firewall-cmd --zone="$ZONE" "--${VERB}-rich-rule=$r" >/dev/null 2>&1 || true
+    firewall-cmd --zone="$ZONE" --permanent "--${VERB}-rich-rule=$r" >/dev/null 2>&1 || true
+done
+
+# --- Readback verification (fail-safe, no half state) -------------------------
+RUNTIME=$(firewall-cmd --zone="$ZONE" --list-rich-rules 2>/dev/null)
+PERM=$(firewall-cmd --zone="$ZONE" --permanent --list-rich-rules 2>/dev/null)
+FAIL=0
+for m in "${MARKERS[@]}"; do
+    rt_present=false; grep -qE "$m" <<<"$RUNTIME" && rt_present=true
+    pm_present=false; grep -qE "$m" <<<"$PERM"    && pm_present=true
+    if [ "$ACTION" = block ]; then
+        [ "$rt_present" = true ] || { echo "ERROR: runtime marker missing after block: $m" >&2; FAIL=1; }
+        [ "$pm_present" = true ] || { echo "ERROR: permanent marker missing after block: $m" >&2; FAIL=1; }
+    else
+        [ "$rt_present" = false ] || { echo "ERROR: runtime marker still present after allow: $m" >&2; FAIL=1; }
+        [ "$pm_present" = false ] || { echo "ERROR: permanent marker still present after allow: $m" >&2; FAIL=1; }
+    fi
+done
+
+if [ "$FAIL" != 0 ]; then
+    echo "ERROR: $APP $ACTION not cleanly verified -- check state (see messages above)!" >&2
+    exit 1
+fi
+
+echo "$APP: $ACTION successful (zone $ZONE, runtime+permanent, no reload)"
