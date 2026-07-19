@@ -78,11 +78,26 @@ BSTATUS=$(cat "$BAT/status" 2>/dev/null || echo "?")
 AC=$([ "$BSTATUS" = "Discharging" ] && echo false || echo true)
 
 # --- Tailscale -------------------------------------------------------------
-TS_IP4=$(cfg_or_detect network.tailscale detect_tailnet_ip4); [ -z "$TS_IP4" ] && TS_IP4="?"
+# network.tailscale is a presence/enable *toggle*, not the tailnet IP (design
+# spec §2a/§2b): "auto" (or absent) -> detect presence via has_tailscale();
+# "off"/"disabled"/"false"/"no" -> treat Tailscale as absent (feature off).
+# The tailnet IPv4 itself is always auto-detected -- there is no IP override.
 TS_HOST=$(hostname 2>/dev/null)
-TS_ACTIVE=$([ "$TS_IP4" != "?" ] && echo true || echo false)
-TS_PEERS=$(tailscale status --json 2>/dev/null | jq '(.Peer // {}) | length' 2>/dev/null)
-if ! [[ "$TS_PEERS" =~ ^[0-9]+$ ]]; then TS_PEERS=0; fi
+TS_MODE=$(msw_cfg network.tailscale auto)
+case "$TS_MODE" in
+    off|disabled|false|no) TS_PRESENT=false ;;
+    *) if has_tailscale; then TS_PRESENT=true; else TS_PRESENT=false; fi ;;
+esac
+if [ "$TS_PRESENT" = true ]; then
+    TS_IP4=$(detect_tailnet_ip4); [ -z "$TS_IP4" ] && TS_IP4="?"
+    TS_ACTIVE=$([ "$TS_IP4" != "?" ] && echo true || echo false)
+    TS_PEERS=$(tailscale status --json 2>/dev/null | jq '(.Peer // {}) | length' 2>/dev/null)
+    if ! [[ "$TS_PEERS" =~ ^[0-9]+$ ]]; then TS_PEERS=0; fi
+else
+    TS_IP4="?"
+    TS_ACTIVE=false
+    TS_PEERS=0
+fi
 
 # --- GPU (dGPU on PCI 0000:01:00.0, runtime PM) -------------------------------
 GPU_PRESENT=$([ -e "$GPU_DEV" ] && echo true || echo false)

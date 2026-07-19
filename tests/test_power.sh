@@ -7,7 +7,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 . tests/lib.sh
 CLI=bin/msw-power
-NIC=enp11s0   # TODO(task2): auto-detect (wired default-route interface)
+. bin/msw-config
+NIC=$(detect_wol_nic)
+[ -z "$NIC" ] && NIC=$(detect_lan_ifaces | awk '{print $1}')
 
 assert "[ -x $CLI ]" "msw-power is executable"
 
