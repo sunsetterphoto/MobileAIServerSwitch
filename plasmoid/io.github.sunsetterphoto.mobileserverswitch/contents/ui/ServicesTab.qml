@@ -18,29 +18,25 @@ ColumnLayout {
 
     spacing: Kirigami.Units.smallSpacing
 
-    // id -> systemd unit. The JSON from msw-status --json doesn't carry the
-    // unit name, so it's hardcoded here for now.
-    // TODO(task3): read `unit` straight from the service object in msw-status
-    // output instead of this hardcoded table.
-    function unitFor(id) {
-        switch (id) {
-        case "sunshine":   return "app-dev.lizardbyte.app.Sunshine.service";
-        case "comfyui":    return "comfyui.service";
-        case "speaches":   return "speaches.service";
-        case "chatterbox": return "chatterbox.service";
-        case "ollama":     return "ollama.service";
-        }
-        return "";
-    }
-
+    // The unit name comes straight from the service object (msw-status
+    // --json carries `unit` per config.services entry; no hardcoded table).
     function toggle(svc) {
         var action = svc.active ? "stop" : "start";
-        var unit = unitFor(svc.id);
-        if (!unit) return;   // unknown id -> don't run systemctl without a unit
+        var unit = svc.unit;
+        if (!unit) return;   // malformed entry -> don't run systemctl without a unit
         var cmd = svc.scope === "system"
             ? "sudo -n systemctl " + action + " " + unit
             : "systemctl --user " + action + " " + unit;
         ctrl.runAndRefresh(cmd);
+    }
+
+    PlasmaComponents3.Label {
+        Layout.fillWidth: true
+        visible: !((ctrl.status.services) || []).length
+        text: "No services configured -- add them in settings"
+        opacity: 0.7
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter
     }
 
     Repeater {

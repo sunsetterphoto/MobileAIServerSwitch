@@ -1,0 +1,69 @@
+{
+  "_comment": "Example config for Mobile Server Switch. Copy this file to ~/.config/mobileserverswitch/config.json and edit it there -- this file itself is never read by the CLIs. Any section/key you omit falls back to its default (usually \"auto\" = runtime auto-detection). Remove this _comment key in your own copy if you like; it is ignored by the CLIs either way.",
+
+  "network": {
+    "_comment": "\"auto\" runs live detection on every read. Only override a value here if detection picks the wrong interface/zone on your system.",
+    "lan_interfaces": "auto",
+    "tailscale": "auto",
+    "firewall_zone": "auto",
+    "wol_nic": "auto"
+  },
+
+  "services": [
+    {
+      "_comment": "Each entry needs id (stable key), label (shown in the Services tab), unit (systemd unit name), scope (user or system), and port (for the exposure check). This list is EMPTY by default on a fresh install -- add your own services here.",
+      "id": "sunshine",
+      "label": "Sunshine (game streaming)",
+      "unit": "sunshine.service",
+      "scope": "user",
+      "port": 47989
+    },
+    {
+      "id": "jellyfin",
+      "label": "Jellyfin (media server)",
+      "unit": "jellyfin.service",
+      "scope": "system",
+      "port": 8096
+    },
+    {
+      "id": "ollama",
+      "label": "Ollama (local LLM)",
+      "unit": "ollama.service",
+      "scope": "system",
+      "port": 11434
+    },
+    {
+      "id": "syncthing",
+      "label": "Syncthing (file sync)",
+      "unit": "syncthing.service",
+      "scope": "user",
+      "port": 8384
+    }
+  ],
+
+  "mode": {
+    "enabled": true,
+    "charge_thresholds": { "enabled": false, "server": "40/80", "laptop": "0/100" },
+    "stop_on_laptop": ["sunshine"]
+  },
+
+  "firewall": {
+    "apps": [
+      { "id": "rdp", "ports_tcp": "3389" },
+      { "id": "vnc", "ports_tcp": "5900-5903" }
+    ]
+  },
+
+  "remote": {
+    "rdp": { "enabled": "auto", "bind": "tailscale" }
+  },
+
+  "features": {
+    "_comment": "Show/hide whole tabs. Overview is always shown.",
+    "performance": true,
+    "mode": true,
+    "remote": true,
+    "services": true,
+    "firewall": true
+  }
+}
