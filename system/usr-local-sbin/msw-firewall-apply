@@ -2,13 +2,23 @@
 # Sets/removes LAN-block rules (firewalld rich-rules) for individual apps.
 # Caller: msw-firewall. Runs as root. Usage: msw-firewall-apply <block|allow> <app>.
 #
-# SECURITY (see .superpowers/specs/2026-07-18-mobileserverswitch-design.md §15-B):
-# - Fixed app->rule whitelist below (case "$APP" ...). ONLY rdp/vnc/sunshine/comfyui.
-#   Anything else (in particular "ssh"/"22"/"tailscale") falls through the
-#   whitelist, resulting in an error message + exit != 0, WITHOUT any firewall action.
-# - Defense in depth: in addition to the whitelist, the resolved ports of the
-#   chosen rule(s) are checked -- if port 22 is among them, the helper aborts
-#   immediately (no action). This also catches future typos in the table below.
+# SECURITY (see .superpowers/specs/2026-07-19-public-release-design.md §2a/§3):
+# - App whitelist is CONFIG-DRIVEN: config.firewall.apps (each entry
+#   {id, ports_tcp?, ports_udp?}, port value = single port or "lo-hi" range).
+#   If the config is absent or `firewall.apps` is empty, the BUILT-IN DEFAULT
+#   whitelist applies: exactly rdp (3389/tcp) and vnc (5900-5903/tcp) --
+#   NOT sunshine/comfyui/anything else. Once the config lists apps, ONLY
+#   those config-listed ids are valid (the built-in default is a fallback,
+#   not an addition).
+# - HARD, UNCONDITIONAL refusal regardless of config: "ssh", "22",
+#   "tailscale", "tailscale0" are NEVER acceptable app ids. This check runs
+#   BEFORE the config is even consulted, and config entries with one of
+#   these ids are also skipped defensively when building the table.
+# - Defense in depth: in addition to the id whitelist, the resolved ports of
+#   the chosen rule(s) -- whether built-in or config-derived -- are checked:
+#   if port 22 is among them, the helper aborts immediately (no action).
+#   This also catches a user's config accidentally listing a custom app
+#   whose ports span 22.
 # - Only the LAN zone (auto-detected: firewalld's default zone, overridable
 #   via config key network.firewall_zone). Never touches interfaces/zones
 #   otherwise, never touches tailscale0 (zoneless -> Tailnet access always
@@ -32,37 +42,74 @@ case "$ACTION" in
     *) echo "Unknown action: $ACTION (allowed: block|allow)" >&2; exit 2 ;;
 esac
 
-# --- Fixed app -> rich-rule whitelist (RULES) + readback markers (MARKERS) ----
-# 1:1 correspondence. Exactly these 4 apps, nothing else.
-declare -a RULES=()
-declare -a MARKERS=()
+# --- Hard, unconditional refusal (checked BEFORE config is even read) --------
 case "$APP" in
-    rdp)
-        RULES=('rule port port="3389" protocol="tcp" reject')
-        MARKERS=('port="3389".*reject')
-        ;;
-    vnc)
-        RULES=('rule port port="5900-5903" protocol="tcp" reject')
-        MARKERS=('port="5900-5903"')
-        ;;
-    sunshine)
-        RULES=(
-            'rule port port="47984-48010" protocol="tcp" reject'
-            'rule port port="47998-48000" protocol="udp" reject'
-        )
-        MARKERS=('port="47984-48010"' 'port="47998-48000"')
-        ;;
-    comfyui)
-        RULES=('rule port port="8188" protocol="tcp" reject')
-        MARKERS=('port="8188"')
-        ;;
-    *)
-        echo "Unknown app: $APP (allowed: rdp|vnc|sunshine|comfyui) -- no action." >&2
-        exit 2
+    ssh|22|tailscale|tailscale0)
+        echo "ERROR: '$APP' is never a valid firewall app (hard refusal) -- aborted, no action" >&2
+        exit 1
         ;;
 esac
 
+# --- App -> rich-rule table: config-driven, default fallback rdp+vnc ---------
+declare -a RULES=()
+declare -a MARKERS=()
+FOUND=0
+
+# add_ports <ports-string> <protocol> — ports-string may be a single port,
+# a "lo-hi" range, or a comma-separated list of either; appends one rule +
+# marker per token.
+add_ports() {
+    local ports=$1 proto=$2 tok
+    IFS=',' read -ra __toks <<< "$ports"
+    for tok in "${__toks[@]}"; do
+        tok=$(printf '%s' "$tok" | tr -d '[:space:]')
+        [ -z "$tok" ] && continue
+        RULES+=("rule port port=\"$tok\" protocol=\"$proto\" reject")
+        MARKERS+=("port=\"$tok\"")
+    done
+}
+
+CFG_APPS_JSON=""
+if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
+    CFG_APPS_JSON=$(jq -c '.firewall.apps // [] | .[]' "$MSW_CONFIG_FILE" 2>/dev/null)
+fi
+
+if [ -n "$CFG_APPS_JSON" ]; then
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        id=$(jq -r '.id // empty' <<<"$entry" 2>/dev/null)
+        [ -z "$id" ] && continue
+        # Defense in depth: a config entry can never define one of the
+        # hard-refused ids either, even though $APP itself is already
+        # checked above.
+        case "$id" in
+            ssh|22|tailscale|tailscale0) continue ;;
+        esac
+        if [ "$id" = "$APP" ]; then
+            FOUND=1
+            ptcp=$(jq -r '.ports_tcp // empty' <<<"$entry" 2>/dev/null)
+            pudp=$(jq -r '.ports_udp // empty' <<<"$entry" 2>/dev/null)
+            [ -n "$ptcp" ] && add_ports "$ptcp" tcp
+            [ -n "$pudp" ] && add_ports "$pudp" udp
+        fi
+    done <<< "$CFG_APPS_JSON"
+else
+    # No config file / no jq / firewall.apps absent or empty -> built-in
+    # default whitelist: rdp + vnc only.
+    case "$APP" in
+        rdp) FOUND=1; add_ports "3389" tcp ;;
+        vnc) FOUND=1; add_ports "5900-5903" tcp ;;
+    esac
+fi
+
+if [ "$FOUND" != 1 ] || [ "${#RULES[@]}" -eq 0 ]; then
+    echo "Unknown app: $APP (not in the configured firewall app whitelist -- see config.firewall.apps, default: rdp|vnc) -- no action." >&2
+    exit 2
+fi
+
 # --- Defense-in-depth guard: port 22 (ssh) must NOT appear in any rule --------
+# Runs on EVERY resolved rule, config-derived or built-in alike -- no
+# exceptions, regardless of where the ports came from.
 for r in "${RULES[@]}"; do
     ports=$(grep -oP 'port="\K[^"]+' <<<"$r")
     if [[ -z "$ports" ]] || ! [[ "$ports" =~ ^[0-9]+(-[0-9]+)?$ ]]; then
@@ -91,8 +138,8 @@ RUNTIME=$(firewall-cmd --zone="$ZONE" --list-rich-rules 2>/dev/null)
 PERM=$(firewall-cmd --zone="$ZONE" --permanent --list-rich-rules 2>/dev/null)
 FAIL=0
 for m in "${MARKERS[@]}"; do
-    rt_present=false; grep -qE "$m" <<<"$RUNTIME" && rt_present=true
-    pm_present=false; grep -qE "$m" <<<"$PERM"    && pm_present=true
+    rt_present=false; grep -qF "$m" <<<"$RUNTIME" && rt_present=true
+    pm_present=false; grep -qF "$m" <<<"$PERM"    && pm_present=true
     if [ "$ACTION" = block ]; then
         [ "$rt_present" = true ] || { echo "ERROR: runtime marker missing after block: $m" >&2; FAIL=1; }
         [ "$pm_present" = true ] || { echo "ERROR: permanent marker missing after block: $m" >&2; FAIL=1; }

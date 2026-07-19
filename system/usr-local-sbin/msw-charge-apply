@@ -1,28 +1,79 @@
 #!/usr/bin/env bash
-# Sets the battery charge thresholds according to the saved msw-mode state.
-# Single source of truth: /var/lib/mobileserverswitch/mode  (server|laptop)
-# Callers: the msw-mode script (after a mode switch) and
-#          msw-charge-thresholds.service (at boot).
+# Sets the battery charge thresholds according to the saved msw-mode state
+# and config.mode.charge_thresholds (~/.config/mobileserverswitch/config.json).
+# Single source of truth for the *mode*: /var/lib/mobileserverswitch/mode
+# (server|laptop). Callers: the msw-mode script (after a mode switch) and
+# msw-charge-thresholds.service (at boot).
+#
+# GENERIC + OPT-IN (see .superpowers/specs/2026-07-19-public-release-design.md §3):
+# - Hardware support is detected generically (first battery under
+#   /sys/class/power_supply/*/ that exposes charge_control_end_threshold),
+#   not hardcoded to BAT0.
+# - Thresholds are only ever written if BOTH hold: the sysfs support above
+#   exists, AND config.mode.charge_thresholds.enabled == true. Missing
+#   config / disabled / unsupported hardware -> skip silently, exit 0, no
+#   sysfs write at all (fail-safe default: leave the battery firmware's own
+#   behavior alone unless the user opted in).
+# - Threshold values themselves come from config.mode.charge_thresholds.server
+#   / .laptop ("START/END" strings, e.g. "40/80"); malformed config values
+#   fall back to the built-in defaults (40/80 server, 0/100 laptop).
 set -uo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+. "$SCRIPT_DIR/msw-config"
 STATE=/var/lib/mobileserverswitch/mode
-BAT=/sys/class/power_supply/BAT0
 
-[ -e "$BAT/charge_control_start_threshold" ] || { echo "No charge-threshold support at $BAT"; exit 0; }
+# --- Generic hardware detection: first battery with threshold support --------
+BAT=""
+for d in /sys/class/power_supply/*/; do
+    [ -e "${d}charge_control_end_threshold" ] || continue
+    BAT=${d%/}
+    break
+done
+if [ -z "$BAT" ]; then
+    echo "No charge-threshold support (no /sys/class/power_supply/*/charge_control_end_threshold) -- skipped"
+    exit 0
+fi
 
-MODE=$( [ -r "$STATE" ] && cat "$STATE" || echo server )   # default: server
-case "$MODE" in
-    server) START=40 END=80  ;;   # permanent AC operation -> preserve battery
-    laptop) START=0  END=100 ;;   # mobile / battery cycling -> charge fully
-    *)      echo "Unknown mode '$MODE' in $STATE - falling back to server"; START=40 END=80 ;;
+# --- Opt-in gate: config.mode.charge_thresholds.enabled -----------------------
+ENABLED=$(msw_cfg mode.charge_thresholds.enabled false)
+case "$ENABLED" in
+    true|1|yes) ;;
+    *)
+        echo "Charge thresholds disabled (config.mode.charge_thresholds.enabled != true) -- skipped, thresholds unchanged ($BAT)"
+        exit 0
+        ;;
 esac
 
-# start before end: for both transitions (0/100 <-> 40/80) start < end always holds.
+MODE=$( [ -r "$STATE" ] && cat "$STATE" || echo server )   # default: server
+
+# parse_pair "NN/NN" -> prints "START END" on success, fails (non-zero) on
+# anything not matching that shape.
+parse_pair() {
+    [[ "$1" =~ ^([0-9]{1,3})/([0-9]{1,3})$ ]] || return 1
+    printf '%s %s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+}
+
+case "$MODE" in
+    server) DEFAULT_PAIR="40/80"  ;;   # permanent AC operation -> preserve battery
+    laptop) DEFAULT_PAIR="0/100"  ;;   # mobile / battery cycling -> charge fully
+    *)
+        echo "Unknown mode '$MODE' in $STATE - falling back to server"
+        MODE=server; DEFAULT_PAIR="40/80"
+        ;;
+esac
+
+CFG_PAIR=$(msw_cfg "mode.charge_thresholds.$MODE" "$DEFAULT_PAIR")
+if ! read -r START END <<< "$(parse_pair "$CFG_PAIR")"; then
+    echo "WARNING: config.mode.charge_thresholds.$MODE ('$CFG_PAIR') is not in NN/NN form -- using built-in default $DEFAULT_PAIR" >&2
+    read -r START END <<< "$(parse_pair "$DEFAULT_PAIR")"
+fi
+
 echo "$START" > "$BAT/charge_control_start_threshold"
 echo "$END"   > "$BAT/charge_control_end_threshold"
 
 RS=$(cat "$BAT/charge_control_start_threshold"); RE=$(cat "$BAT/charge_control_end_threshold")
 if [ "$RS" = "$START" ] && [ "$RE" = "$END" ]; then
-    echo "Mode $MODE: charge thresholds ${RS}/${RE}"
+    echo "Mode $MODE: charge thresholds ${RS}/${RE} ($BAT)"
 else
     echo "ERROR: wanted ${START}/${END}, got ${RS}/${RE}" >&2; exit 1
 fi

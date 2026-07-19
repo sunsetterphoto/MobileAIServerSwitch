@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # msw-firewall — block/allow LAN access per app (firewalld, default zone).
-# Fixed app->port whitelist (see msw-firewall-apply):
-# rdp, vnc, sunshine, comfyui. NOTHING ELSE — in particular NEVER ssh/tailscale.
+# App whitelist is CONFIG-DRIVEN (config.firewall.apps, each {id,ports_tcp?,
+# ports_udp?}). Default (config absent/empty) = rdp, vnc. NOTHING ELSE is
+# ever valid — in particular NEVER ssh/22/tailscale/tailscale0, regardless of
+# what a config might list (see msw-firewall-apply for the hard refusal).
 #   msw-firewall block <app>    block LAN access to <app> via a reject rule
 #   msw-firewall allow <app>    lift the block again
 #   msw-firewall status         current rich-rules of the zone (read-only)
-# Thin wrapper: validates the coarse shape, delegates to the privileged helper
-# msw-firewall-apply (sudo -n). Fine validation (whitelist, ssh block) is done
-# exclusively by the helper — this wrapper never passes anything through unfiltered.
+# Thin wrapper: validates the app id against the configured whitelist,
+# delegates to the privileged helper msw-firewall-apply (sudo -n). Final,
+# authoritative validation (whitelist + port-22 guard) is done exclusively
+# by the helper — this wrapper never passes anything through unfiltered.
 set -uo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 . "$SCRIPT_DIR/msw-config"
@@ -16,14 +19,37 @@ ZONE=$(cfg_or_detect network.firewall_zone detect_firewall_zone)
 
 usage() { sed -n '2,10p' "$0" | sed 's/^# \?//'; }
 
+# valid_apps — app ids allowed right now: config.firewall.apps ids if the
+# config defines any (hard-refused ids filtered out defensively), else the
+# built-in default rdp+vnc.
+valid_apps() {
+    local ids=""
+    if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
+        ids=$(jq -r '.firewall.apps // [] | .[].id // empty' "$MSW_CONFIG_FILE" 2>/dev/null \
+              | grep -vxE 'ssh|22|tailscale|tailscale0')
+    fi
+    if [ -n "$ids" ]; then
+        printf '%s\n' "$ids"
+    else
+        printf 'rdp\nvnc\n'
+    fi
+}
+
 case "${1:-}" in
     block|allow)
         action=$1
-        app=${2:?Usage: msw-firewall $1 <rdp|vnc|sunshine|comfyui>}
+        app=${2:?Usage: msw-firewall $1 <app>}
+        # Hard, unconditional refusal — checked before the config whitelist
+        # even runs, so these ids are rejected even if config parsing failed
+        # open for some reason.
         case "$app" in
-            rdp|vnc|sunshine|comfyui) ;;
-            *) echo "Unknown app: $app (allowed: rdp|vnc|sunshine|comfyui)" >&2; exit 2 ;;
+            ssh|22|tailscale|tailscale0)
+                echo "Unknown app: $app (never a valid firewall app)" >&2; exit 2 ;;
         esac
+        if ! valid_apps | grep -qxF "$app"; then
+            echo "Unknown app: $app (allowed: $(valid_apps | tr '\n' ' ' | sed 's/ *$//'))" >&2
+            exit 2
+        fi
         sudo -n "$APPLY" "$action" "$app"
         ;;
     status)

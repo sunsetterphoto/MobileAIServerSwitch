@@ -151,11 +151,53 @@ else
     FW_SSH=false
 fi
 
-# App markers in --list-rich-rules (see design spec §15-B / firewall-apply table).
-FW_RDP_BLOCKED=$(grep -qE 'port="3389".*reject' <<<"$FW_RICH" && echo true || echo false)
-FW_VNC_BLOCKED=$(grep -q 'port="5900-5903"' <<<"$FW_RICH" && echo true || echo false)
-FW_SUN_BLOCKED=$(grep -q 'port="47984-48010"' <<<"$FW_RICH" && echo true || echo false)
-FW_COMFY_BLOCKED=$(grep -q 'port="8188"' <<<"$FW_RICH" && echo true || echo false)
+# App list + blocked-state (config-driven; see design spec §2a/§3 and
+# msw-firewall-apply, which is the single source of truth for the actual
+# rule/marker shape). Default (config absent/empty firewall.apps) = rdp+vnc
+# only -- nothing is hardcoded to sunshine/comfyui/etc here anymore.
+fw_app_ids() {
+    if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
+        local ids
+        ids=$(jq -r '.firewall.apps // [] | .[].id // empty' "$MSW_CONFIG_FILE" 2>/dev/null \
+              | grep -vxE 'ssh|22|tailscale|tailscale0')
+        if [ -n "$ids" ]; then printf '%s\n' "$ids"; return; fi
+    fi
+    printf 'rdp\nvnc\n'
+}
+
+# fw_app_ports <id> — prints "ports_tcp ports_udp" for the given app id,
+# reading config.firewall.apps if present, else the built-in default
+# (rdp=3389/tcp, vnc=5900-5903/tcp).
+fw_app_ports() {
+    local id=$1 entry ptcp="" pudp="" found=0
+    if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
+        entry=$(jq -c --arg id "$id" '(.firewall.apps // [])[] | select(.id == $id)' "$MSW_CONFIG_FILE" 2>/dev/null | head -1)
+        if [ -n "$entry" ]; then
+            found=1
+            ptcp=$(jq -r '.ports_tcp // empty' <<<"$entry" 2>/dev/null)
+            pudp=$(jq -r '.ports_udp // empty' <<<"$entry" 2>/dev/null)
+        fi
+    fi
+    if [ "$found" = 0 ]; then
+        case "$id" in
+            rdp) ptcp="3389" ;;
+            vnc) pudp="" ptcp="5900-5903" ;;
+        esac
+    fi
+    printf '%s %s' "$ptcp" "$pudp"
+}
+
+FW_APPS="{}"
+while IFS= read -r fw_id; do
+    [ -z "$fw_id" ] && continue
+    read -r fw_ptcp fw_pudp <<< "$(fw_app_ports "$fw_id")"
+    fw_blocked=false
+    for fw_tok in ${fw_ptcp//,/ } ${fw_pudp//,/ }; do
+        [ -z "$fw_tok" ] && continue
+        grep -qF "port=\"$fw_tok\"" <<<"$FW_RICH" && fw_blocked=true
+    done
+    FW_APPS=$(jq --arg id "$fw_id" --argjson blocked "$fw_blocked" '. + {($id): {blocked: $blocked}}' <<<"$FW_APPS")
+done < <(fw_app_ids)
 
 if [ -n "$FW_IFACES_RAW" ]; then
     FW_LAN_IFACES_JSON=$(jq -nc --arg s "$FW_IFACES_RAW" '$s | split(" ") | map(select(length>0))')
@@ -165,11 +207,6 @@ else
     FW_LAN_IFACES_JSON=$(jq -nc --arg s "$(cfg_or_detect network.lan_interfaces detect_lan_ifaces)" \
         '$s | split(" ") | map(select(length>0))')
 fi
-
-FW_APPS=$(jq -n \
-  --argjson rdp "$FW_RDP_BLOCKED" --argjson vnc "$FW_VNC_BLOCKED" \
-  --argjson sunshine "$FW_SUN_BLOCKED" --argjson comfyui "$FW_COMFY_BLOCKED" \
-  '{rdp:{blocked:$rdp},vnc:{blocked:$vnc},sunshine:{blocked:$sunshine},comfyui:{blocked:$comfyui}}')
 
 FIREWALL=$(jq -n \
   --argjson zone "$FW_ZONE_J" --argjson lan_ifaces "$FW_LAN_IFACES_JSON" \
