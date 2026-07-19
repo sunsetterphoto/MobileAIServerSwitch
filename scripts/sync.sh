@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Deploys this repo's versioned files to their live paths.
 # Idempotent. --dry-run only shows what would happen.
+#
+# This is the lightweight dev-deploy loop (copy-only, no dependency checks,
+# no sudoers, no consent prompts, assumes the plasmoid is already
+# registered). For a first-time/full install on a new machine -- dependency
+# checks, plasmoid registration, the scoped sudoers grant, default config --
+# use install.sh at the repo root instead.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
