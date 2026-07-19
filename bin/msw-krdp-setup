@@ -47,16 +47,30 @@ if [ -z "$TAILNET_IP" ]; then
 fi
 
 mkdir -p "$DEST_DIR"
-# Substitution via environment variables + awk (no sed-escaping problems
-# with special characters in the password; awk reads values from ENVIRON,
-# never from the script text -> nothing ends up in shell history/process
-# list except the invocation itself).
+# Pattern-engine-free literal substitution. Neither the needle nor the value is
+# interpreted, so passwords containing & \ / or other metacharacters survive
+# verbatim. This deliberately avoids both awk/sed gsub AND bash's ${x//p/r}:
+# awk/sed replacements treat & as "the whole match", and bash 5.2+ does the same
+# for & in the replacement of ${x//p/r} -- either would corrupt a password
+# containing &. Here we split the line on the (quoted, literal) needle and
+# concatenate the value directly, so no engine ever sees it. The value stays in
+# shell memory and is never passed to an external process's argument list.
+subst_literal() {  # subst_literal <string> <needle> <value> -> prints result
+    local str=$1 needle=$2 value=$3 out=""
+    while [[ $str == *"$needle"* ]]; do
+        out+="${str%%"$needle"*}$value"
+        str=${str#*"$needle"}
+    done
+    printf '%s' "$out$str"
+}
 umask 077
-PW="$PW" IP="$TAILNET_IP" awk '{
-    gsub(/__RDP_PASSWORD__/, ENVIRON["PW"]);
-    gsub(/__TAILNET_IP__/, ENVIRON["IP"]);
-    print
-}' "$TEMPLATE" > "$DEST"
+{
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(subst_literal "$line" '__RDP_PASSWORD__' "$PW")
+        line=$(subst_literal "$line" '__TAILNET_IP__' "$TAILNET_IP")
+        printf '%s\n' "$line"
+    done
+} < "$TEMPLATE" > "$DEST"
 chmod 600 "$DEST"
 
 echo "Written: $DEST (mode $(stat -c '%a' "$DEST"))"
