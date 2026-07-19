@@ -1,0 +1,394 @@
+<!-- docs/index.html — GitHub Pages landing page for Mobile Server Switch.
+     Self-contained: no external fonts/scripts/stylesheets/images. Screenshots
+     under docs/img/ are added by the release process; until then the
+     <img> alt text is shown by the browser. -->
+<title>Mobile Server Switch</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A KDE Plasma 6 widget to monitor and control a workstation/laptop running temporarily as a server — mode, performance, remote access, services and firewall, from your phone over your Tailnet.">
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --bg-elevated: #ffffff;
+    --text: #1a1d29;
+    --text-muted: #565b6e;
+    --border: #e2e4ec;
+    --accent: #3457d5;
+    --accent-soft: #eaefff;
+    --code-bg: #101423;
+    --code-text: #e6e8f2;
+    --shadow: 0 1px 2px rgba(20, 24, 44, 0.04), 0 8px 24px rgba(20, 24, 44, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1117;
+      --bg-elevated: #171a24;
+      --text: #eef0f7;
+      --text-muted: #a3a8bd;
+      --border: #2a2e3d;
+      --accent: #7c93ff;
+      --accent-soft: #1c2440;
+      --code-bg: #0a0c13;
+      --code-text: #dfe2f0;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1117;
+    --bg-elevated: #171a24;
+    --text: #eef0f7;
+    --text-muted: #a3a8bd;
+    --border: #2a2e3d;
+    --accent: #7c93ff;
+    --accent-soft: #1c2440;
+    --code-bg: #0a0c13;
+    --code-text: #dfe2f0;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7fb;
+    --bg-elevated: #ffffff;
+    --text: #1a1d29;
+    --text-muted: #565b6e;
+    --border: #e2e4ec;
+    --accent: #3457d5;
+    --accent-soft: #eaefff;
+    --code-bg: #101423;
+    --code-text: #e6e8f2;
+    --shadow: 0 1px 2px rgba(20, 24, 44, 0.04), 0 8px 24px rgba(20, 24, 44, 0.06);
+  }
+
+  * { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+  }
+  section { padding: clamp(2.5rem, 6vw, 5rem) 0; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+  }
+
+  /* Hero */
+  .hero {
+    padding: clamp(3rem, 8vw, 6rem) 0 clamp(2.5rem, 6vw, 4rem);
+    text-align: center;
+  }
+  .hero .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 0.35rem 0.9rem;
+    margin-bottom: 1.25rem;
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    margin: 0 0 0.75rem;
+    letter-spacing: -0.02em;
+  }
+  .hero p.pitch {
+    font-size: clamp(1.05rem, 2vw, 1.25rem);
+    color: var(--text-muted);
+    max-width: 640px;
+    margin: 0 auto 2rem;
+  }
+  .badges { display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 2rem; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .cta-row { display: flex; justify-content: center; gap: 0.75rem; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.7rem 1.4rem;
+    border-radius: 10px;
+    font-weight: 600;
+    text-decoration: none;
+    font-size: 0.95rem;
+    border: 1px solid transparent;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary { background: var(--accent); color: white; box-shadow: var(--shadow); }
+  .btn-secondary { background: var(--bg-elevated); color: var(--text); border-color: var(--border); }
+
+  /* Section headings */
+  h2.section-title {
+    font-size: clamp(1.5rem, 3vw, 2rem);
+    text-align: center;
+    margin: 0 0 0.5rem;
+    letter-spacing: -0.01em;
+  }
+  p.section-sub {
+    text-align: center;
+    color: var(--text-muted);
+    max-width: 620px;
+    margin: 0 auto 2.5rem;
+  }
+
+  /* Feature grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1.25rem;
+  }
+  .card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem;
+    box-shadow: var(--shadow);
+  }
+  .card .icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1rem;
+    color: var(--accent);
+  }
+  .card h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--text-muted); font-size: 0.92rem; }
+
+  /* Screenshots */
+  .shots {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1rem;
+  }
+  .shot {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 10;
+    object-fit: cover;
+    background: var(--accent-soft);
+    color: var(--text-muted);
+  }
+  .shot figcaption {
+    padding: 0.6rem 0.9rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  /* Install */
+  .install-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.75rem;
+    box-shadow: var(--shadow);
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  pre.code-block {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    margin: 0.75rem 0 0;
+  }
+  pre.code-block code { color: inherit; }
+
+  /* Security */
+  .security {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.75rem 2rem;
+    box-shadow: var(--shadow);
+  }
+  .security ul { margin: 0.75rem 0 0; padding-left: 1.2rem; color: var(--text-muted); }
+  .security li { margin-bottom: 0.5rem; }
+  .security strong { color: var(--text); }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 2rem 0 3rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.88rem;
+  }
+  footer a { color: var(--text-muted); text-decoration: underline; }
+  footer .links { margin-top: 0.5rem; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+</style>
+
+<div class="wrap">
+  <header class="hero">
+    <span class="eyebrow">KDE Plasma 6 · MIT licensed</span>
+    <h1>Mobile Server Switch</h1>
+    <p class="pitch">
+      Monitor and control a workstation/laptop that's temporarily running as
+      a server — mode, performance/power, remote access, services and
+      firewall — all from your phone, over your Tailnet.
+    </p>
+    <div class="badges">
+      <span class="badge">License: MIT</span>
+      <span class="badge">Plasma 6</span>
+      <span class="badge">v1.0</span>
+    </div>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/sunsetterphoto/MobileServerSwitch">View on GitHub</a>
+      <a class="btn btn-secondary" href="https://github.com/sunsetterphoto/MobileServerSwitch#install">Install guide</a>
+    </div>
+  </header>
+
+  <section id="features">
+    <h2 class="section-title">Six tabs, one control center</h2>
+    <p class="section-sub">Everything you'd otherwise SSH in to check or change — surfaced in a Plasma widget, reachable from anywhere on your Tailnet.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+        </div>
+        <h3>Overview</h3>
+        <p>Compact read-only summary: mode, performance, dGPU power draw, battery/AC, Tailnet IP, remote-access status, active services, Wake-on-LAN. Click through to any detail tab.</p>
+      </div>
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+        </div>
+        <h3>Performance</h3>
+        <p>Power saver / balanced / performance presets via KDE PowerProfiles, plus a fine CPU-cap slider, dGPU runtime power management, WiFi/Bluetooth radios and Energy Performance Preference.</p>
+      </div>
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4M7 23l-4-4 4-4M21 5H9a4 4 0 00-4 4M3 19h12a4 4 0 004-4"/></svg>
+        </div>
+        <h3>Mode</h3>
+        <p>Server ⇄ Laptop switch. Server mode favors uptime; switching back to Laptop stops configured server services after a confirmation.</p>
+      </div>
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <h3>Remote Access</h3>
+        <p>Status for SSH, RDP (KRDP), VNC, Sunshine, KDE Connect, Tailnet and Wake-on-LAN. On/off switches for RDP and Sunshine — SSH and Tailscale stay read-only, always.</p>
+      </div>
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V21a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1H3a2 2 0 110-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H9a1.7 1.7 0 001-1.55V3a2 2 0 114 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V9a1.7 1.7 0 001.55 1H21a2 2 0 110 4h-.09a1.7 1.7 0 00-1.55 1z"/></svg>
+        </div>
+        <h3>Services</h3>
+        <p>A configurable list of user/system services with live status, port reachability, and start/stop — configured once, not hardcoded.</p>
+      </div>
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.4 8.4-8 10-4.6-1.6-8-5-8-10V6z"/></svg>
+        </div>
+        <h3>Firewall</h3>
+        <p>firewalld status at a glance plus targeted LAN-only blocks for configured apps. SSH stays allowed and the Tailnet is never affected — always.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <h2 class="section-title">See it in action</h2>
+    <p class="section-sub">Screenshots of the running widget, one per tab.</p>
+    <div class="shots">
+      <figure class="shot">
+        <img src="img/overview.png" alt="Overview tab screenshot" loading="lazy">
+        <figcaption>Overview — everything at a glance</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/performance.png" alt="Performance tab screenshot" loading="lazy">
+        <figcaption>Performance — presets, CPU cap, power switches</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/mode.png" alt="Mode tab screenshot" loading="lazy">
+        <figcaption>Mode — Server ⇄ Laptop</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/remote.png" alt="Remote Access tab screenshot" loading="lazy">
+        <figcaption>Remote Access — SSH, RDP, VNC, Tailnet</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/services.png" alt="Services tab screenshot" loading="lazy">
+        <figcaption>Services — status, ports, start/stop</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/firewall.png" alt="Firewall tab screenshot" loading="lazy">
+        <figcaption>Firewall — zone, LAN blocks, SSH always allowed</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="install">
+    <h2 class="section-title">Install</h2>
+    <p class="section-sub">One command, idempotent, dry-run first if you like.</p>
+    <div class="install-card">
+      <strong>Quick install</strong>
+      <pre class="code-block"><code>git clone https://github.com/sunsetterphoto/MobileServerSwitch.git
+cd MobileServerSwitch
+./install.sh</code></pre>
+      <p style="color:var(--text-muted); font-size:0.9rem; margin-top:1rem;">
+        Requires <code>jq</code> and <code>kpackagetool6</code>; everything
+        else (firewalld, rfkill, ethtool, tailscale, PowerProfiles,
+        nvidia-smi) is optional and degrades gracefully. See the
+        <a href="https://github.com/sunsetterphoto/MobileServerSwitch#install">full README</a>
+        for manual install, configuration and uninstall.
+      </p>
+    </div>
+  </section>
+
+  <section id="security">
+    <h2 class="section-title">Security model</h2>
+    <p class="section-sub">The core promise: nothing here can ever lock you out.</p>
+    <div class="security">
+      <ul>
+        <li><strong>SSH and Tailscale/the Tailnet are never switched or firewalled</strong> — no button, no rule, anywhere in the codebase. The firewall helper enforces a fixed/configured app whitelist and hard-refuses any rule touching port 22, regardless of configuration.</li>
+        <li><strong>RDP is bound exclusively to the Tailnet</strong>, never <code>0.0.0.0</code>. If no Tailnet address is detected, remote-desktop setup refuses to run at all rather than falling back to a wider bind.</li>
+        <li><strong>Reads are unprivileged; writes go through scoped helpers.</strong> System-level changes (sysfs, rfkill, ethtool, firewalld) run exclusively via dedicated helper scripts under <code>/usr/local/sbin</code>, each enforcing a fixed whitelist — never a blanket <code>sudo</code> from the widget.</li>
+        <li>Risky live actions (CPU cap, service start/stop, radio switches, firewall rules) are all reversible and never change remote reachability.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <div>Mobile Server Switch — MIT License © 2026 sunsetterphoto</div>
+    <div class="links">
+      <a href="https://github.com/sunsetterphoto/MobileServerSwitch">GitHub</a>
+      <a href="https://github.com/sunsetterphoto/MobileServerSwitch/blob/main/README.md">README</a>
+      <a href="https://github.com/sunsetterphoto/MobileServerSwitch/blob/main/LICENSE">License</a>
+      <a href="https://github.com/sunsetterphoto/MobileServerSwitch/blob/main/CONTRIBUTING.md">Contributing</a>
+    </div>
+  </footer>
+</div>

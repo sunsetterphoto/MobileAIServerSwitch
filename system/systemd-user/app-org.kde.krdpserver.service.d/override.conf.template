@@ -10,23 +10,24 @@
 #   `--plasma`: KWin-native screencast + fake input instead of the
 #   XDG-RemoteDesktop portal. No consent dialog on connect -> unattended
 #   server operation.
-#   Certificate: generated once (CN = local hostname; TODO(task2): document
-#   auto-detected hostname here), lives under
+#   Certificate: generated once (CN = local hostname), lives under
 #   ~/.local/share/krdpserver/server.{crt,key}.
 #
 # SECURITY: krdpserver only accepts the password via `-p/--password` (no
 #   --password-file / no env var). It is therefore present in the LIVE
 #   override file (mode 600) and visible in the process command line (`ps`)
 #   to the owning user. For this reason the LIVE file with the real password
-#   is NEVER committed to the repo -- only this template with a placeholder.
+#   is NEVER committed to the repo -- only this template with placeholders.
 #   Generate the live file with:
 #       bin/msw-krdp-setup <RDP-PASSWORD>
 #   (writes ~/.config/systemd/user/app-org.kde.krdpserver.service.d/override.conf,
 #    mode 600, and runs daemon-reload).
 [Service]
 ExecStart=
-# TODO(task2): auto-detect the Tailnet IPv4 address (`tailscale ip -4`) instead
-# of the hardcoded literal below; msw-status/msw-krdp-setup will substitute it.
+# __TAILNET_IP__ is substituted by msw-krdp-setup with this host's detected
+# Tailscale IPv4 address (`tailscale ip -4`) -- never 0.0.0.0/a LAN address.
+# msw-krdp-setup refuses to write this file if no Tailnet IP can be detected
+# (fail closed: no Tailnet IP -> no RDP listener at all).
 # %u is a systemd specifier resolved to the user running this --user unit, so
 # no personal username literal is needed here.
-ExecStart=/usr/bin/krdpserver --plasma --address 100.75.62.108 --port 3389 --certificate %h/.local/share/krdpserver/server.crt --certificate-key %h/.local/share/krdpserver/server.key --username %u --password __RDP_PASSWORD__
+ExecStart=/usr/bin/krdpserver --plasma --address __TAILNET_IP__ --port 3389 --certificate %h/.local/share/krdpserver/server.crt --certificate-key %h/.local/share/krdpserver/server.key --username %u --password __RDP_PASSWORD__

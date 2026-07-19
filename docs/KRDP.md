@@ -1,89 +1,106 @@
-# KRDP — Wayland-natives RDP, nur im Tailnet erreichbar
+# KRDP — Wayland-native RDP, reachable only over the Tailnet
 
-Verifizierte Einrichtung auf `t15g2nsa` (Fedora 44, KDE Plasma 6.7.2 Wayland).
-Stand: 2026-07-19. Alle Werte am echten System geprüft (nicht geraten).
+Optional Wayland-native remote desktop via [KRDP](https://invent.kde.org/plasma/krdp),
+KDE's own RDP server. Setup below is verified against Plasma 6.7 on Wayland;
+package/unit names may differ slightly on other distros or Plasma point
+releases.
 
-## Was & warum
+## What & why
 
-- **Paket:** `krdp-6.7.3-1.fc44` → Binary `/usr/bin/krdpserver`, User-Unit
+- **Package:** `krdp` (Fedora: `krdp-6.7.x`, package names vary by distro) →
+  binary `/usr/bin/krdpserver`, user unit
   `app-org.kde.krdpserver.service`, KCM `kcm_krdpserver` (System Settings →
-  „Entfernte Arbeitsfläche").
-- **Ziel:** RDP-Zugang zum laufenden Desktop, **ausschließlich über das Tailnet**
-  (`100.75.62.108:3389`), nie auf `0.0.0.0`.
+  "Remote Desktop").
+- **Goal:** RDP access to the running desktop, **exclusively over the
+  Tailnet** (`<TAILNET_IP>:3389`), never on `0.0.0.0`.
 
-## Warum ein systemd-User-Override (statt KCM)
+## Why a systemd user override (instead of the KCM)
 
-`krdpserver --help` zeigt: die Bind-Adresse kommt nur über `--address` (Default
-`0.0.0.0`). Der KCM speichert Nutzer/Passwort zwar sicher in KWallet, bietet aber
-**keine** Adress-Einstellung. Für die Tailnet-Bindung brauchen wir also explizite
-Flags → Drop-In-Override der Stock-Unit:
+`krdpserver --help` shows that the bind address is only settable via
+`--address` (default `0.0.0.0`). The KCM stores username/password securely in
+KWallet but offers **no** address setting. To get the Tailnet-only bind we
+need explicit flags — hence a drop-in override on the stock unit:
 
 ```
-~/.config/systemd/user/app-org.kde.krdpserver.service.d/override.conf   (Mode 600)
+~/.config/systemd/user/app-org.kde.krdpserver.service.d/override.conf   (mode 600)
 ```
 
-Der Override ersetzt nur `ExecStart`; Reihenfolge/Umgebung der Stock-Unit
-(`After=plasma-*`, `WantedBy=plasma-workspace.target`) bleiben erhalten, damit der
-Dienst in der grafischen Sitzung mit gültigem `WAYLAND_DISPLAY`/KWin-Zugriff läuft.
+The override only replaces `ExecStart`; the stock unit's ordering/environment
+(`After=plasma-*`, `WantedBy=plasma-workspace.target`) is preserved, so the
+service still runs inside the graphical session with a valid
+`WAYLAND_DISPLAY`/KWin access.
 
-Effektiver Aufruf:
+Effective invocation (values shown as placeholders — see below for how they
+are filled in):
 
 ```
 /usr/bin/krdpserver --plasma \
-  --address 100.75.62.108 --port 3389 \
+  --address <TAILNET_IP> --port 3389 \
   --certificate  %h/.local/share/krdpserver/server.crt \
   --certificate-key %h/.local/share/krdpserver/server.key \
-  --username samuel --password <geheim>
+  --username <USERNAME> --password <secret>
 ```
 
-- `--plasma`: KWin-native Screencast + Fake-Input statt XDG-RemoteDesktop-Portal
-  → **kein** Consent-Dialog beim Verbinden (unbeaufsichtigter Serverbetrieb).
-- **TLS-Zertifikat:** einmalig erzeugt, `CN=t15g2nsa`, gültig bis 2036, unter
-  `~/.local/share/krdpserver/server.{crt,key}`. Selbstsigniert → im RDP-Client
-  einmalig bestätigen.
+- `--plasma`: KWin-native screencast + fake input instead of the XDG
+  RemoteDesktop portal → **no** consent dialog on connect (unattended server
+  operation).
+- **TLS certificate:** generated once via the KCM, `CN=<HOSTNAME>` (your
+  machine's `hostname`), stored under
+  `~/.local/share/krdpserver/server.{crt,key}`. Self-signed → accept it once
+  in the RDP client.
 
-## Sicherheit: Passwort nicht im Repo
+## Security: the password never lives in the repo
 
-`krdpserver` nimmt das Passwort nur per `-p/--password` (kein `--password-file`,
-keine Env-Var). Es steht daher in der Live-Override (Mode 600) und ist in der
-Prozess-Cmdline (`ps`) für den **eigenen** Nutzer sichtbar. Auf einem
-Single-User-Server akzeptabel; die Datei wird jedoch **nie** committet.
+`krdpserver` only accepts the password via `-p/--password` (no
+`--password-file`, no environment variable). It therefore ends up in the live
+override file (mode 600) and is visible in the process command line (`ps`)
+to the **owning** user. Acceptable on a single-user machine, but the file is
+**never** committed.
 
-Im Repo liegt nur die **Vorlage** mit Platzhalter:
+The repo only contains the **template** with placeholders:
 `system/systemd-user/app-org.kde.krdpserver.service.d/override.conf.template`.
+The template uses two placeholders, `__TAILNET_IP__` and `__RDP_PASSWORD__`;
+`bin/msw-krdp-setup` fills both in when it writes the live file — the
+Tailnet IP via `tailscale ip -4` (auto-detected, never hardcoded), the
+password from its command-line argument. If no Tailnet IPv4 address can be
+detected, the helper refuses to write the file at all (fail closed: no
+Tailnet address means no RDP listener, rather than falling back to a wider
+bind).
 
-## Einrichtung reproduzieren
+## Setting it up
 
 ```bash
-# 1) Paket
-sudo dnf install -y krdp
+# 1) Package
+sudo dnf install -y krdp        # or your distro's equivalent
 
-# 2) (falls noch kein Zertifikat) einmalig über den KCM erzeugen:
-#    System Settings → Entfernte Arbeitsfläche → Zertifikat erzeugen.
-#    Ergebnis: ~/.local/share/krdpserver/server.{crt,key}
+# 2) (if you don't have a certificate yet) generate one once via the KCM:
+#    System Settings -> Remote Desktop -> Generate Certificate.
+#    Result: ~/.local/share/krdpserver/server.{crt,key}
 
-# 3) Live-Override aus der Vorlage schreiben (Passwort einsetzen, Mode 600):
-bin/t15g-krdp-setup '<RDP-PASSWORT>'
+# 3) Write the live override from the template (fills in your Tailnet IP
+#    and the password you pass; mode 600):
+bin/msw-krdp-setup '<RDP-PASSWORD>'
 
-# 4) Starten + persistent (Live-Eingriff -> bewusst manuell):
+# 4) Start + persist (a live action -> deliberately manual):
 systemctl --user enable --now app-org.kde.krdpserver.service
 
-# 5) Bind verifizieren -- MUSS Tailnet sein, NICHT 0.0.0.0:
+# 5) Verify the bind -- MUST be your Tailnet address, NOT 0.0.0.0:
 ss -tlnH 'sport = :3389'
-#   -> LISTEN ... 100.75.62.108:3389 ... users:(("krdpserver",...))
+#   -> LISTEN ... <TAILNET_IP>:3389 ... users:(("krdpserver",...))
 
-# 6) Status-Erkennung im Widget:
-t15g-status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["remote"]["rdp"])'
-#   -> {'installed': True, 'active': True}
+# 6) Status detection in the widget:
+msw-status --json | jq '.remote.rdp'
+#   -> {"installed": true, "active": true}
 ```
 
-## Verbinden
+## Connecting
 
-RDP-Client (z. B. FreeRDP/Remmina/Windows-Client) auf **`100.75.62.108`**,
-Benutzer `samuel`, Passwort wie gesetzt. Selbstsigniertes Zertifikat einmalig
-akzeptieren. Nur aus dem Tailnet erreichbar.
+Point an RDP client (e.g. FreeRDP, Remmina, the Windows RDP client) at your
+machine's **Tailnet IP** (`tailscale ip -4`), with the username you set up
+(typically `$(id -un)` on that machine) and the password you chose. Accept
+the self-signed certificate once. Only reachable from within the Tailnet.
 
-## Zurücknehmen
+## Reverting
 
 ```bash
 systemctl --user disable --now app-org.kde.krdpserver.service
