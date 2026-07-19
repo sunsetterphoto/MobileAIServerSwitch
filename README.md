@@ -21,20 +21,20 @@ your phone, without needing a terminal.
 
 ## Screenshots
 
-<!-- Screenshots are captured from the running widget and added by the
-     release process; this section is a placeholder layout until then. -->
+> 📸 **Screenshots coming soon.** The widget ships with six tabs — **Overview**,
+> **Performance**, **Mode**, **Remote Access**, **Services** and **Firewall** —
+> plus an in-widget settings dialog (network, services, mode, firewall apps,
+> remote access). Captures of the running widget will be added here shortly.
 
+<!-- Screenshot layout to restore once docs/img/*.png exist:
 | Overview | Performance | Mode |
 |---|---|---|
 | ![Overview tab](docs/img/overview.png) | ![Performance tab](docs/img/performance.png) | ![Mode tab](docs/img/mode.png) |
-
 | Remote Access | Services | Firewall |
-|---|---|---|
 | ![Remote Access tab](docs/img/remote.png) | ![Services tab](docs/img/services.png) | ![Firewall tab](docs/img/firewall.png) |
-
-<!-- Settings screenshot -->
 ![Settings](docs/img/settings.png)
-*In-widget configuration: network, services, mode, firewall apps and remote access — no need to hand-edit the config file.*
+-->
+
 
 ## Features
 

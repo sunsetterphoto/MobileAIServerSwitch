@@ -201,6 +201,17 @@
     background: var(--accent-soft);
     color: var(--text-muted);
   }
+  .shot-soon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    background: var(--accent-soft);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    letter-spacing: 0.02em;
+  }
   .shot figcaption {
     padding: 0.6rem 0.9rem;
     font-size: 0.85rem;
@@ -322,33 +333,34 @@
 
   <section id="screenshots">
     <h2 class="section-title">See it in action</h2>
-    <p class="section-sub">Screenshots of the running widget, one per tab.</p>
+    <p class="section-sub">Screenshots of the running widget are coming soon — one per tab.</p>
     <div class="shots">
       <figure class="shot">
-        <img src="img/overview.png" alt="Overview tab screenshot" loading="lazy">
+        <div class="shot-soon" aria-label="Overview screenshot coming soon">📸 Coming soon</div>
         <figcaption>Overview — everything at a glance</figcaption>
       </figure>
       <figure class="shot">
-        <img src="img/performance.png" alt="Performance tab screenshot" loading="lazy">
+        <div class="shot-soon" aria-label="Performance screenshot coming soon">📸 Coming soon</div>
         <figcaption>Performance — presets, CPU cap, power switches</figcaption>
       </figure>
       <figure class="shot">
-        <img src="img/mode.png" alt="Mode tab screenshot" loading="lazy">
+        <div class="shot-soon" aria-label="Mode screenshot coming soon">📸 Coming soon</div>
         <figcaption>Mode — Server ⇄ Laptop</figcaption>
       </figure>
       <figure class="shot">
-        <img src="img/remote.png" alt="Remote Access tab screenshot" loading="lazy">
+        <div class="shot-soon" aria-label="Remote Access screenshot coming soon">📸 Coming soon</div>
         <figcaption>Remote Access — SSH, RDP, VNC, Tailnet</figcaption>
       </figure>
       <figure class="shot">
-        <img src="img/services.png" alt="Services tab screenshot" loading="lazy">
+        <div class="shot-soon" aria-label="Services screenshot coming soon">📸 Coming soon</div>
         <figcaption>Services — status, ports, start/stop</figcaption>
       </figure>
       <figure class="shot">
-        <img src="img/firewall.png" alt="Firewall tab screenshot" loading="lazy">
+        <div class="shot-soon" aria-label="Firewall screenshot coming soon">📸 Coming soon</div>
         <figcaption>Firewall — zone, LAN blocks, SSH always allowed</figcaption>
       </figure>
     </div>
+    <!-- Restore <img src="img/<tab>.png"> in each figure once screenshots are captured. -->
   </section>
 
   <section id="install">
