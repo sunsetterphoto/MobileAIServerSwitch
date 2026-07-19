@@ -9,37 +9,39 @@
     "wol_nic": "auto"
   },
 
-  "services": [
-    {
-      "_comment": "Each entry needs id (stable key), label (shown in the Services tab), unit (systemd unit name), scope (user or system), and port (for the exposure check). This list is EMPTY by default on a fresh install -- add your own services here.",
+  "services": [],
+
+  "_services_examples": {
+    "_comment": "Copy entries from _services_examples into the services array to enable them. Each entry needs id (stable key), label (shown in the Services tab), unit (systemd unit name), scope (user or system), and port (for the exposure check).",
+    "sunshine": {
       "id": "sunshine",
       "label": "Sunshine (game streaming)",
       "unit": "sunshine.service",
       "scope": "user",
       "port": 47989
     },
-    {
+    "jellyfin": {
       "id": "jellyfin",
       "label": "Jellyfin (media server)",
       "unit": "jellyfin.service",
       "scope": "system",
       "port": 8096
     },
-    {
+    "ollama": {
       "id": "ollama",
       "label": "Ollama (local LLM)",
       "unit": "ollama.service",
       "scope": "system",
       "port": 11434
     },
-    {
+    "syncthing": {
       "id": "syncthing",
       "label": "Syncthing (file sync)",
       "unit": "syncthing.service",
       "scope": "user",
       "port": 8384
     }
-  ],
+  },
 
   "mode": {
     "enabled": true,
