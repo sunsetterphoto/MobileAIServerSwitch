@@ -198,6 +198,7 @@ ColumnLayout {
                 detail: overviewTab.sshState.active ? "running" : "off"
             }
             StatusRow {
+                visible: overviewTab.sunshineState.installed === true
                 on: overviewTab.sunshineState.active === true
                 label: "Sunshine"
                 detail: overviewTab.sunshineState.active ? "running" : "off"

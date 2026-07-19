@@ -75,17 +75,13 @@ ColumnLayout {
 
     // Sunshine row: on/off switch like the WoL row (instead of StatusRow), so
     // a button fits on the right. Sunshine is an optional generic remote
-    // method (not tied to any particular GPU) -- but unlike rdp/vnc,
-    // msw-status doesn't emit an `installed` flag for it (only
-    // active/exposure, both derived from whether port 47989 is currently
-    // listening). There is therefore no way to distinguish "not installed"
-    // from "installed but stopped" from ctrl.status alone, so this row
-    // can't be graceful-degradation-hidden the same way RDP is without a
-    // CLI-side change (out of scope here -- QML-only task). Left always
-    // visible; only the "(dGPU awake)" wording assumption was removed (see
-    // ModeTab.qml).
+    // method (not tied to any particular GPU); msw-status now emits
+    // remote.sunshine.installed (mirroring rdp/vnc), so the row is hidden
+    // entirely when Sunshine isn't installed -- same graceful-degradation
+    // pattern as RDP/VNC.
     RowLayout {
         Layout.fillWidth: true
+        visible: remoteAccessTab.sunshineState.installed === true
         spacing: Kirigami.Units.smallSpacing
 
         StatusDot { on: remoteAccessTab.sunshineState.active === true }
