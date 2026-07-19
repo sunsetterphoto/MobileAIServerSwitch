@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Sets CPU max performance (intel_pstate/max_perf_pct) and turbo (no_turbo).
+# Caller: msw-perf. Runs as root. Valid cap range: FLOOR..100.
+#
+# FLOOR is a CONSTANT (16), NOT computed from cpuinfo: cpuinfo_max_freq
+# fluctuates depending on turbo state, a floor derived from it would be racy
+# (16<->30 for a CPU with a wide turbo/base gap). 16 = 800 MHz idle / up to
+# 5 GHz turbo on typical mobile Intel CPUs.
+#
+# min_perf_pct is best-effort lowered to FLOOR so a cap below whatever
+# tuned-ppd sets as min (the performance profile pins min high) can actually
+# take effect. Only the MAX cap + turbo are verified (our contract); min
+# belongs to tuned and can be raised again asynchronously -> no hard min
+# guarantee.
+set -uo pipefail
+PSTATE=/sys/devices/system/cpu/intel_pstate
+FLOOR=16
+MPP=${1:?Usage: msw-perf-apply <16..100> <on|off>}
+TURBO=${2:?Usage: msw-perf-apply <16..100> <on|off>}
+
+[ -w "$PSTATE/max_perf_pct" ] || { echo "intel_pstate not writable" >&2; exit 1; }
+case "$MPP" in ''|*[!0-9]*|????*) echo "max_perf_pct invalid (1-3 digits, 16-100)" >&2; exit 2;; esac
+if [ "$MPP" -lt "$FLOOR" ] || [ "$MPP" -gt 100 ]; then
+    echo "max_perf_pct $MPP outside [$FLOOR,100]" >&2; exit 2
+fi
+case "$TURBO" in on) NT=0;; off) NT=1;; *) echo "turbo must be on|off" >&2; exit 2;; esac
+
+# lower min first (min<=max always holds since MPP>=FLOOR); best effort.
+if [ -w "$PSTATE/min_perf_pct" ]; then
+    echo "$FLOOR" > "$PSTATE/min_perf_pct" 2>/dev/null || true
+else
+    echo "WARNING: min_perf_pct not writable, tuned may block the cap" >&2
+fi
+echo "$MPP" > "$PSTATE/max_perf_pct"
+echo "$NT"  > "$PSTATE/no_turbo"
+
+# Only assert cap + turbo (min belongs to tuned, no hard check).
+R1=$(cat "$PSTATE/max_perf_pct"); R2=$(cat "$PSTATE/no_turbo"); R3=$(cat "$PSTATE/min_perf_pct")
+if [ "$R1" = "$MPP" ] && [ "$R2" = "$NT" ]; then
+    echo "Performance: max_perf_pct=$R1 min_perf_pct=$R3 turbo=$([ "$R2" = 0 ] && echo on || echo off)"
+else
+    echo "ERROR: wanted max=$MPP/nt=$NT, got max=$R1/nt=$R2 (min=$R3)" >&2; exit 1
+fi

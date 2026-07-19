@@ -1,0 +1,16 @@
+# Build/packaging artefacts
+*.plasmoid
+*.zip
+*.tar.gz
+
+# Editor/OS cruft
+*~
+*.swp
+.DS_Store
+.directory
+
+# Local scratch
+/scratch/
+
+# Subagent-driven-development scratch (briefs, reports, ledger, diffs)
+.superpowers/

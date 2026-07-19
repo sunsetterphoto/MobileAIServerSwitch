@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Sets the battery charge thresholds according to the saved msw-mode state.
+# Single source of truth: /var/lib/mobileserverswitch/mode  (server|laptop)
+# Callers: the msw-mode script (after a mode switch) and
+#          msw-charge-thresholds.service (at boot).
+set -uo pipefail
+STATE=/var/lib/mobileserverswitch/mode
+BAT=/sys/class/power_supply/BAT0
+
+[ -e "$BAT/charge_control_start_threshold" ] || { echo "No charge-threshold support at $BAT"; exit 0; }
+
+MODE=$( [ -r "$STATE" ] && cat "$STATE" || echo server )   # default: server
+case "$MODE" in
+    server) START=40 END=80  ;;   # permanent AC operation -> preserve battery
+    laptop) START=0  END=100 ;;   # mobile / battery cycling -> charge fully
+    *)      echo "Unknown mode '$MODE' in $STATE - falling back to server"; START=40 END=80 ;;
+esac
+
+# start before end: for both transitions (0/100 <-> 40/80) start < end always holds.
+echo "$START" > "$BAT/charge_control_start_threshold"
+echo "$END"   > "$BAT/charge_control_end_threshold"
+
+RS=$(cat "$BAT/charge_control_start_threshold"); RE=$(cat "$BAT/charge_control_end_threshold")
+if [ "$RS" = "$START" ] && [ "$RE" = "$END" ]; then
+    echo "Mode $MODE: charge thresholds ${RS}/${RE}"
+else
+    echo "ERROR: wanted ${START}/${END}, got ${RS}/${RE}" >&2; exit 1
+fi

@@ -1,0 +1,32 @@
+# systemd USER drop-in for app-org.kde.krdpserver.service (template).
+#
+# WHY an override instead of stock unit/KCM:
+#   The stock unit calls `krdpserver` with no arguments -> default bind 0.0.0.0
+#   (listens on ALL interfaces). The System Settings KCM does store the
+#   user/password securely in KWallet, but it CANNOT set a bind address.
+#   For the security requirement "reachable only via the Tailnet" we need
+#   `--address <tailnet-ip>` -> hence this override with explicit flags.
+#
+#   `--plasma`: KWin-native screencast + fake input instead of the
+#   XDG-RemoteDesktop portal. No consent dialog on connect -> unattended
+#   server operation.
+#   Certificate: generated once (CN = local hostname; TODO(task2): document
+#   auto-detected hostname here), lives under
+#   ~/.local/share/krdpserver/server.{crt,key}.
+#
+# SECURITY: krdpserver only accepts the password via `-p/--password` (no
+#   --password-file / no env var). It is therefore present in the LIVE
+#   override file (mode 600) and visible in the process command line (`ps`)
+#   to the owning user. For this reason the LIVE file with the real password
+#   is NEVER committed to the repo -- only this template with a placeholder.
+#   Generate the live file with:
+#       bin/msw-krdp-setup <RDP-PASSWORD>
+#   (writes ~/.config/systemd/user/app-org.kde.krdpserver.service.d/override.conf,
+#    mode 600, and runs daemon-reload).
+[Service]
+ExecStart=
+# TODO(task2): auto-detect the Tailnet IPv4 address (`tailscale ip -4`) instead
+# of the hardcoded literal below; msw-status/msw-krdp-setup will substitute it.
+# %u is a systemd specifier resolved to the user running this --user unit, so
+# no personal username literal is needed here.
+ExecStart=/usr/bin/krdpserver --plasma --address 100.75.62.108 --port 3389 --certificate %h/.local/share/krdpserver/server.crt --certificate-key %h/.local/share/krdpserver/server.key --username %u --password __RDP_PASSWORD__

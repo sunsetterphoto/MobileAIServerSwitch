@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# msw-krdp-setup <RDP-PASSWORD>
+#
+# Generates the LIVE systemd user override for the KRDP server from the
+# template (system/systemd-user/.../override.conf.template), inserts the
+# password and writes it to ~/.config with mode 600. Reproducible, keeps the
+# password out of the git repo (see template comment).
+#
+# Afterwards: `systemctl --user daemon-reload` (done by this script) and
+#         `systemctl --user enable --now app-org.kde.krdpserver.service`
+#         (deliberately NOT here -- starting the service is a live action
+#          the user must trigger explicitly).
+set -euo pipefail
+
+UNIT="app-org.kde.krdpserver.service"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEMPLATE="$REPO_ROOT/system/systemd-user/$UNIT.d/override.conf.template"
+DEST_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT.d"
+DEST="$DEST_DIR/override.conf"
+
+if [ $# -ne 1 ] || [ -z "${1:-}" ]; then
+    echo "Usage: $(basename "$0") <RDP-PASSWORD>" >&2
+    exit 2
+fi
+PW=$1
+
+if [ ! -f "$TEMPLATE" ]; then
+    echo "Template not found: $TEMPLATE" >&2
+    exit 1
+fi
+if ! command -v krdpserver >/dev/null 2>&1; then
+    echo "krdpserver not installed (dnf install krdp)." >&2
+    exit 1
+fi
+
+mkdir -p "$DEST_DIR"
+# Password substitution via environment variable + awk (no sed-escaping
+# problems with special characters in the password; awk reads the value from
+# ENVIRON, never from the script text -> nothing ends up in shell
+# history/process list except the invocation itself).
+umask 077
+PW="$PW" awk '{ gsub(/__RDP_PASSWORD__/, ENVIRON["PW"]); print }' "$TEMPLATE" > "$DEST"
+chmod 600 "$DEST"
+
+echo "Written: $DEST (mode $(stat -c '%a' "$DEST"))"
+systemctl --user daemon-reload
+echo "daemon-reload ok. Start/persist:"
+echo "  systemctl --user enable --now $UNIT"
+echo "Then verify the bind (must be the Tailnet address, not 0.0.0.0):"
+echo "  ss -tlnH 'sport = :3389'"

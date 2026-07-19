@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Sets individual power/radio switches (dGPU runtime, WiFi, Bluetooth, EPP, ASPM, WoL).
+# Caller: msw-power. Runs as root. Usage: msw-power-apply <what> <value>.
+#
+# Every branch: validate -> write -> read back and check -> report success,
+# exit != 0 on mismatch (exception: NM persistence for wol, best-effort/warning only).
+set -uo pipefail
+NIC=enp11s0   # TODO(task2): auto-detect (wired default-route interface)
+GPU_CTRL=/sys/bus/pci/devices/0000:01:00.0/power/control
+EPP_AVAIL=/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_available_preferences
+ASPM_POLICY=/sys/module/pcie_aspm/parameters/policy
+
+WHAT=${1:?Usage: msw-power-apply <gpu|wifi|bt|epp|aspm|wol> <value>}
+VAL=${2:?Usage: msw-power-apply <gpu|wifi|bt|epp|aspm|wol> <value>}
+
+case "$WHAT" in
+    gpu)
+        case "$VAL" in
+            keep) TARGET=on ;;
+            auto) TARGET=auto ;;
+            *) echo "gpu: value must be keep|auto" >&2; exit 2 ;;
+        esac
+        [ -w "$GPU_CTRL" ] || { echo "$GPU_CTRL not writable" >&2; exit 1; }
+        echo "$TARGET" > "$GPU_CTRL"
+        R=$(cat "$GPU_CTRL")
+        if [ "$R" = "$TARGET" ]; then
+            echo "gpu: power/control=$R"
+        else
+            echo "ERROR: wanted gpu control=$TARGET, got $R" >&2; exit 1
+        fi
+        ;;
+
+    wifi)
+        case "$VAL" in
+            on)  rfkill unblock wifi; WANT=no  ;;
+            off) rfkill block wifi;   WANT=yes ;;
+            *) echo "wifi: value must be on|off" >&2; exit 2 ;;
+        esac
+        R=$(rfkill list wifi | awk -F': ' '/Soft blocked/{print $2; exit}')
+        if [ "$R" = "$WANT" ]; then
+            echo "wifi: $VAL (soft blocked: $R)"
+        else
+            echo "ERROR: wanted wifi soft-blocked=$WANT, got $R" >&2; exit 1
+        fi
+        ;;
+
+    bt)
+        case "$VAL" in
+            on)  rfkill unblock bluetooth; WANT=on  ;;
+            off) rfkill block bluetooth;   WANT=off ;;
+            *) echo "bt: value must be on|off" >&2; exit 2 ;;
+        esac
+        # off = EVERY entry soft-blocked yes; on = NO entry soft-blocked yes.
+        if rfkill list bluetooth | grep -q 'Soft blocked: yes'; then BLOCKED=yes; else BLOCKED=no; fi
+        if { [ "$WANT" = off ] && [ "$BLOCKED" = yes ]; } || { [ "$WANT" = on ] && [ "$BLOCKED" = no ]; }; then
+            echo "bt: $VAL (soft blocked: $BLOCKED)"
+        else
+            echo "ERROR: wanted bt $VAL, soft-blocked is $BLOCKED" >&2; exit 1
+        fi
+        ;;
+
+    epp)
+        [ -r "$EPP_AVAIL" ] || { echo "$EPP_AVAIL not readable" >&2; exit 1; }
+        AVAIL=$(cat "$EPP_AVAIL")
+        case " $AVAIL " in
+            *" $VAL "*) : ;;
+            *) echo "epp: '$VAL' not among available preferences ($AVAIL)" >&2; exit 2 ;;
+        esac
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+            [ -w "$f" ] && echo "$VAL" > "$f" 2>/dev/null || true
+        done
+        R=$(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)
+        if [ "$R" = "$VAL" ]; then
+            echo "epp: cpu0=$R (set on all CPUs)"
+        else
+            echo "ERROR: wanted epp=$VAL, cpu0 is $R" >&2; exit 1
+        fi
+        ;;
+
+    aspm)
+        case "$VAL" in
+            default|performance|powersave|powersupersave) : ;;
+            *) echo "aspm: policy must be default|performance|powersave|powersupersave" >&2; exit 2 ;;
+        esac
+        [ -w "$ASPM_POLICY" ] || { echo "$ASPM_POLICY not writable" >&2; exit 1; }
+        echo "$VAL" > "$ASPM_POLICY"
+        R=$(grep -oP '\[\K[^]]+' "$ASPM_POLICY")
+        if [ "$R" = "$VAL" ]; then
+            echo "aspm: policy=$R"
+        else
+            echo "ERROR: wanted aspm=$VAL, got $R" >&2; exit 1
+        fi
+        ;;
+
+    wol)
+        case "$VAL" in
+            on)  ethtool -s "$NIC" wol g; WANT=g; NMVAL=magic  ;;
+            off) ethtool -s "$NIC" wol d; WANT=d; NMVAL=ignore ;;
+            *) echo "wol: value must be on|off" >&2; exit 2 ;;
+        esac
+        R=$(ethtool "$NIC" | awk -F': ' '/^[[:space:]]*Wake-on:/{print $2; exit}')
+        if [ "$R" != "$WANT" ]; then
+            echo "ERROR: wanted wol=$WANT, ethtool shows Wake-on=$R" >&2; exit 1
+        fi
+        echo "wol: $VAL (Wake-on: $R)"
+        # Best-effort persistence via NetworkManager; NEVER connection up/down/
+        # reactivate (would re-activate the connection and drop the running
+        # SSH session). `modify` only changes the saved config, not the live link.
+        CONN=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null \
+            | awk -F: -v d="$NIC" '$2==d{print $1; exit}')
+        if [ -z "$CONN" ]; then
+            echo "WARNING: no active nmcli connection found for $NIC, persistence skipped" >&2
+        elif ! nmcli connection modify "$CONN" 802-3-ethernet.wake-on-lan "$NMVAL" 2>/dev/null; then
+            echo "WARNING: nmcli connection modify for '$CONN' failed, persistence skipped" >&2
+        fi
+        ;;
+
+    *)
+        echo "Unknown: $WHAT" >&2; exit 2 ;;
+esac

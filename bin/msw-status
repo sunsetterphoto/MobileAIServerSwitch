@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# msw-status --json : aggregated Mobile Server Switch state as JSON (read-only).
+# Single-source-of-truth interface between the CLIs and the plasmoid.
+set -uo pipefail
+
+TAILNET_PREFIX="100."          # Tailscale CGNAT range 100.64.0.0/10
+BAT=/sys/class/power_supply/BAT0
+PSTATE=/sys/devices/system/cpu/intel_pstate
+GPU_DEV=/sys/bus/pci/devices/0000:01:00.0
+WOL_NIC=enp11s0                # TODO(task2): auto-detect (wired default-route interface)
+
+# --- Derive exposure of a TCP port from actually listening sockets -----------
+exposure_for_port() {  # $1 = port ; echo "localhost" | "Tailnet" | "LAN" | "LAN+Tailnet" | ""
+    local port=$1 addrs local=0 tail=0 lan=0
+    addrs=$(ss -tlnH "sport = :$port" 2>/dev/null | awk '{print $4}')
+    [ -z "$addrs" ] && { echo ""; return; }
+    local a ip
+    while read -r a; do
+        [ -z "$a" ] && continue
+        ip=${a%:*}; ip=${ip#\[}; ip=${ip%\]}
+        case "$ip" in
+            127.0.0.1|::1)         local=1 ;;
+            0.0.0.0|::|\*)         lan=1; tail=1 ;;
+            ${TAILNET_PREFIX}*)    tail=1 ;;
+            *)                     lan=1 ;;
+        esac
+    done <<< "$addrs"
+    local out=()
+    [ "$local" = 1 ] && out+=("localhost")
+    [ "$lan" = 1 ]   && out+=("LAN")
+    [ "$tail" = 1 ] && [ "$lan" = 0 ] && out+=("Tailnet")
+    ( IFS=+; echo "${out[*]}" )
+}
+
+port_active() { ss -tlnH "sport = :$1" 2>/dev/null | grep -q . && echo true || echo false; }
+
+svc_active_user()   { systemctl --user is-active "$1" 2>/dev/null | grep -qx active && echo true || echo false; }
+svc_active_system() { systemctl is-active "$1" 2>/dev/null | grep -qx active && echo true || echo false; }
+
+# --- Wake-on-LAN (best effort: sudo/ethtool may fail without breaking the JSON) --
+wol_json() {  # $1 = nic
+    local nic=$1 out supported=null enabled=null mode="?"
+    out=$(sudo -n ethtool "$nic" 2>/dev/null)
+    if [ -n "$out" ]; then
+        echo "$out" | grep -q "Supports Wake-on:" && supported=true || supported=false
+        mode=$(echo "$out" | awk -F': ' '/^[[:space:]]*Wake-on:/{print $2}' | tr -d '[:space:]')
+        if [ -n "$mode" ]; then
+            [ "$mode" != "d" ] && enabled=true || enabled=false
+        else
+            mode="?"
+            enabled=false
+        fi
+    fi
+    jq -n --argjson supported "$supported" --argjson enabled "$enabled" --arg mode "$mode" \
+          '{supported:$supported,enabled:$enabled,mode:$mode}'
+}
+
+# --- Mode (from state file) ---------------------------------------------------
+MODE=$( [ -r /var/lib/mobileserverswitch/mode ] && cat /var/lib/mobileserverswitch/mode || echo "?" )
+
+# --- Performance ---------------------------------------------------------------
+PROFILE=$(busctl --system get-property org.freedesktop.UPower.PowerProfiles \
+    /org/freedesktop/UPower/PowerProfiles \
+    org.freedesktop.UPower.PowerProfiles ActiveProfile 2>/dev/null | sed 's/^s "//;s/"$//')
+[ -z "$PROFILE" ] && PROFILE="?"
+MPP=$(cat "$PSTATE/max_perf_pct" 2>/dev/null || echo 100)
+NOTURBO=$(cat "$PSTATE/no_turbo" 2>/dev/null || echo 0)
+TURBO=$([ "$NOTURBO" = "0" ] && echo true || echo false)
+
+# --- Power / battery -----------------------------------------------------------
+BATT=$(cat "$BAT/capacity" 2>/dev/null || echo null)
+CS=$(cat "$BAT/charge_control_start_threshold" 2>/dev/null || echo "?")
+CE=$(cat "$BAT/charge_control_end_threshold" 2>/dev/null || echo "?")
+BSTATUS=$(cat "$BAT/status" 2>/dev/null || echo "?")
+AC=$([ "$BSTATUS" = "Discharging" ] && echo false || echo true)
+
+# --- Tailscale -------------------------------------------------------------
+TS_IP4=$(tailscale ip -4 2>/dev/null | head -1); [ -z "$TS_IP4" ] && TS_IP4="?"
+TS_HOST=$(tailscale status --json 2>/dev/null | jq -r '.Self.HostName // empty' 2>/dev/null)
+TS_ACTIVE=$([ "$TS_IP4" != "?" ] && echo true || echo false)
+TS_PEERS=$(tailscale status --json 2>/dev/null | jq '(.Peer // {}) | length' 2>/dev/null)
+if ! [[ "$TS_PEERS" =~ ^[0-9]+$ ]]; then TS_PEERS=0; fi
+
+# --- GPU (dGPU on PCI 0000:01:00.0, runtime PM) -------------------------------
+GPU_PRESENT=$([ -e "$GPU_DEV" ] && echo true || echo false)
+GPU_RUNTIME=$(cat "$GPU_DEV/power/runtime_status" 2>/dev/null || echo "?")
+GPU_AWAKE=$([ "$GPU_RUNTIME" = "active" ] && echo true || echo false)
+GPU_DSTATE=$(cat "$GPU_DEV/power_state" 2>/dev/null || echo "?")
+GPU_WATTS=null
+if [ "$GPU_AWAKE" = true ]; then
+    w=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d '[:space:]')
+    [[ "$w" =~ ^[0-9]+([.][0-9]+)?$ ]] && GPU_WATTS="$w"
+fi
+GPU_CONTROL=$(cat "$GPU_DEV/power/control" 2>/dev/null || echo "?")
+[ -z "$GPU_CONTROL" ] && GPU_CONTROL="?"
+
+# --- Power extras (EPP / ASPM / radios) ---------------------------------------
+EPP=$(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || echo "?")
+[ -z "$EPP" ] && EPP="?"
+ASPM=$(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null | grep -oP '\[\K[^]]+')
+[ -z "$ASPM" ] && ASPM="?"
+WIFI=$(rfkill list wifi 2>/dev/null | grep -q "Soft blocked: yes" && echo off || echo on)
+BT=$(rfkill list bluetooth 2>/dev/null | grep -q "Soft blocked: yes" && echo off || echo on)
+
+# --- Wake-on-LAN -----------------------------------------------------------
+WOL=$(wol_json "$WOL_NIC")
+
+# --- Firewall (firewalld, read-only) ------------------------------------------
+# Security note: nothing is written/changed here, only `--list-*` (unprivileged
+# readable) is evaluated. Every error branch (firewalld inactive, firewall-cmd
+# missing) still returns valid JSON with sensible defaults, exit stays 0 (same
+# pattern as gpu/power_extra/remote).
+FW_ZONE="FedoraWorkstation"     # TODO(task2): auto-detect (firewall-cmd --get-default-zone)
+FW_ACTIVE=false
+if command -v firewall-cmd >/dev/null 2>&1; then
+    FW_STATE=$(firewall-cmd --state 2>/dev/null)
+    [ "$FW_STATE" = "running" ] && FW_ACTIVE=true
+fi
+
+if [ "$FW_ACTIVE" = true ]; then
+    FW_ZONE_J=$(jq -nc --arg z "$FW_ZONE" '$z')
+    FW_PORTS=$(firewall-cmd --zone="$FW_ZONE" --list-ports 2>/dev/null)
+    FW_SERVICES=$(firewall-cmd --zone="$FW_ZONE" --list-services 2>/dev/null)
+    FW_RICH=$(firewall-cmd --zone="$FW_ZONE" --list-rich-rules 2>/dev/null)
+    FW_IFACES_RAW=$(firewall-cmd --zone="$FW_ZONE" --list-interfaces 2>/dev/null)
+    FW_HIGH=$(grep -q '1025-65535/tcp' <<<"$FW_PORTS" && echo true || echo false)
+    FW_SSH=$(grep -qw ssh <<<"$FW_SERVICES" && echo true || echo false)
+else
+    FW_ZONE_J=null
+    FW_RICH=""
+    FW_IFACES_RAW=""
+    FW_HIGH=false
+    FW_SSH=false
+fi
+
+# App markers in --list-rich-rules (see design spec §15-B / firewall-apply table).
+FW_RDP_BLOCKED=$(grep -qE 'port="3389".*reject' <<<"$FW_RICH" && echo true || echo false)
+FW_VNC_BLOCKED=$(grep -q 'port="5900-5903"' <<<"$FW_RICH" && echo true || echo false)
+FW_SUN_BLOCKED=$(grep -q 'port="47984-48010"' <<<"$FW_RICH" && echo true || echo false)
+FW_COMFY_BLOCKED=$(grep -q 'port="8188"' <<<"$FW_RICH" && echo true || echo false)
+
+if [ -n "$FW_IFACES_RAW" ]; then
+    FW_LAN_IFACES_JSON=$(jq -nc --arg s "$FW_IFACES_RAW" '$s | split(" ") | map(select(length>0))')
+else
+    # TODO(task2): auto-detect (default-route interfaces) instead of this fallback
+    FW_LAN_IFACES_JSON='["enp11s0","wlp9s0"]'
+fi
+
+FW_APPS=$(jq -n \
+  --argjson rdp "$FW_RDP_BLOCKED" --argjson vnc "$FW_VNC_BLOCKED" \
+  --argjson sunshine "$FW_SUN_BLOCKED" --argjson comfyui "$FW_COMFY_BLOCKED" \
+  '{rdp:{blocked:$rdp},vnc:{blocked:$vnc},sunshine:{blocked:$sunshine},comfyui:{blocked:$comfyui}}')
+
+FIREWALL=$(jq -n \
+  --argjson zone "$FW_ZONE_J" --argjson lan_ifaces "$FW_LAN_IFACES_JSON" \
+  --argjson high_ports_open "$FW_HIGH" --argjson ssh_allowed "$FW_SSH" \
+  --argjson apps "$FW_APPS" \
+  '{zone:$zone,lan_ifaces:$lan_ifaces,high_ports_open:$high_ports_open,ssh_allowed:$ssh_allowed,apps:$apps}')
+
+# --- RDP (KRDP) / VNC: installed + active status -------------------------------
+RDP_INST=$(command -v krdpserver >/dev/null 2>&1 && echo true || (rpm -q krdp >/dev/null 2>&1 && echo true || echo false))
+RDP_ACTIVE=$(svc_active_user app-org.kde.krdpserver.service)
+[ "$RDP_ACTIVE" = false ] && RDP_ACTIVE=$(port_active 3389)
+VNC_INST=$( (command -v krfb >/dev/null 2>&1 || command -v wayvnc >/dev/null 2>&1) && echo true || echo false)
+VNC_ACTIVE=$(port_active 5900)
+
+# --- Services array ------------------------------------------------------------
+# TODO(task3): build this from config.services instead of the hardcoded list below.
+# Format per entry: id label scope unit port
+svc_row() {  # $1 id  $2 label  $3 scope(user|system)  $4 unit  $5 port
+    local active; [ "$3" = system ] && active=$(svc_active_system "$4") || active=$(svc_active_user "$4")
+    jq -n --arg id "$1" --arg label "$2" --arg scope "$3" \
+          --argjson active "$active" --argjson port "$5" \
+          --arg exposure "$(exposure_for_port "$5")" \
+          '{id:$id,label:$label,scope:$scope,active:$active,port:$port,exposure:$exposure}'
+}
+SERVICES=$(jq -s '.' <<EOF
+$(svc_row sunshine   Sunshine   user   app-dev.lizardbyte.app.Sunshine.service 47989)
+$(svc_row comfyui    ComfyUI    user   comfyui.service     8188)
+$(svc_row speaches   Speaches   user   speaches.service    8000)
+$(svc_row chatterbox Chatterbox user   chatterbox.service  8004)
+$(svc_row ollama     Ollama     system ollama.service      11434)
+EOF
+)
+
+# --- Assemble ------------------------------------------------------------------
+jq -n \
+  --arg mode "$MODE" \
+  --arg profile "$PROFILE" --argjson mpp "$MPP" --argjson turbo "$TURBO" \
+  --argjson batt "${BATT:-null}" --arg charge "$CS/$CE" --arg bstatus "$BSTATUS" --argjson ac "$AC" \
+  --argjson ssh_active "$(port_active 22)" --arg ssh_exp "$(exposure_for_port 22)" \
+  --argjson sun_active "$(port_active 47989)" --arg sun_exp "$(exposure_for_port 47989)" \
+  --argjson ts_active "$TS_ACTIVE" --arg ts_ip4 "$TS_IP4" --arg ts_host "${TS_HOST:-?}" --argjson ts_peers "$TS_PEERS" \
+  --argjson kdc_active "$(port_active 1716)" \
+  --argjson rdp_inst "$RDP_INST" --argjson rdp_active "$RDP_ACTIVE" \
+  --argjson vnc_inst "$VNC_INST" --argjson vnc_active "$VNC_ACTIVE" \
+  --argjson wol "$WOL" \
+  --argjson gpu_present "$GPU_PRESENT" --argjson gpu_awake "$GPU_AWAKE" \
+  --arg gpu_dstate "$GPU_DSTATE" --argjson gpu_watts "$GPU_WATTS" --arg gpu_control "$GPU_CONTROL" \
+  --arg epp "$EPP" --arg aspm "$ASPM" --arg wifi "$WIFI" --arg bt "$BT" \
+  --argjson services "$SERVICES" \
+  --argjson firewall "$FIREWALL" \
+  '{
+    mode:$mode,
+    perf:{profile:$profile,max_perf_pct:$mpp,turbo:$turbo},
+    power:{battery:$batt,charge:$charge,status:$bstatus,ac:$ac},
+    gpu:{present:$gpu_present,awake:$gpu_awake,dstate:$gpu_dstate,watts:$gpu_watts,control:$gpu_control},
+    power_extra:{epp:$epp,aspm:$aspm,wifi:$wifi,bt:$bt},
+    firewall:$firewall,
+    remote:{
+      ssh:{active:$ssh_active,port:22,exposure:$ssh_exp},
+      sunshine:{active:$sun_active,port:47989,exposure:$sun_exp},
+      tailscale:{active:$ts_active,ip4:$ts_ip4,host:$ts_host,peers:$ts_peers},
+      kdeconnect:{active:$kdc_active,port:1716},
+      rdp:{installed:$rdp_inst,active:$rdp_active},
+      vnc:{installed:$vnc_inst,active:$vnc_active},
+      wol:$wol
+    },
+    services:$services
+  }'
