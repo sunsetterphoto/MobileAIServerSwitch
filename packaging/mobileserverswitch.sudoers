@@ -1,0 +1,14 @@
+# MobileServerSwitch — scoped sudoers grant.
+#
+# Grants NOPASSWD execution of EXACTLY the 4 privileged apply helpers under
+# /usr/local/sbin, and nothing else: no wildcards, no shell, no other paths,
+# never ssh/systemctl/etc. Each helper enforces its own fixed whitelist
+# internally (see system/usr-local-sbin/msw-*-apply) -- this sudoers entry
+# only controls *who may invoke the helper at all*, not what it does.
+#
+# This file ships with the __USER__ placeholder (no personal username in the
+# repo). install.sh substitutes it with the invoking user ($(id -un)),
+# validates the result with `visudo -c -f`, and installs it to
+# /etc/sudoers.d/mobileserverswitch (mode 440, root) only after an explicit
+# consent prompt. Pass --no-sudoers to install.sh to skip this file entirely.
+__USER__ ALL=(root) NOPASSWD: /usr/local/sbin/msw-charge-apply, /usr/local/sbin/msw-perf-apply, /usr/local/sbin/msw-power-apply, /usr/local/sbin/msw-firewall-apply
