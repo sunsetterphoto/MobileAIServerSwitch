@@ -52,7 +52,10 @@ ColumnLayout {
 
         PlasmaComponents3.Label { text: "Sunshine:"; opacity: 0.7 }
         PlasmaComponents3.Label {
-            text: ctrl.sunshine === "active" ? "running (dGPU awake)" : ctrl.sunshine
+            // Sunshine is a generic optional remote-streaming method, not
+            // tied to any particular GPU -- so this just reports whether the
+            // service is running, without machine-specific assumptions.
+            text: ctrl.sunshine === "active" ? "running" : ctrl.sunshine
             color: ctrl.sunshine === "active" ? Kirigami.Theme.positiveTextColor
                                               : Kirigami.Theme.textColor
         }

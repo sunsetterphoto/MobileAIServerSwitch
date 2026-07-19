@@ -67,6 +67,14 @@ PlasmoidItem {
                                && status.perf.max_perf_pct !== null) ? status.perf.max_perf_pct : 100
     property bool turbo: (status.perf && status.perf.turbo !== undefined) ? status.perf.turbo : true
 
+    // Graceful degradation: whether firewalld is present on this system at
+    // all (msw-status sets firewall.zone to null when firewall-cmd is
+    // missing or firewalld isn't running). Drives whether the Firewall tab
+    // is reachable at all -- see fullRepresentation below. Stays false
+    // (tab hidden) until the first poll completes, same guard pattern as
+    // every other status.* access here.
+    readonly property bool firewallAvailable: !!(status.firewall && status.firewall.zone)
+
     readonly property bool isServer: mode === "server"
     readonly property bool isLaptop: mode === "laptop"
 
@@ -234,6 +242,25 @@ PlasmoidItem {
     // scope). OverviewTab also can't see `tabs` (lives here in the
     // fullRepresentation scope), so it passes clicks up through the
     // navigate(index) signal instead.
+    //
+    // Firewall tab index parity: the TabBar and StackLayout both always keep
+    // all 6 children (same count, same order) -- only the Firewall
+    // TabButton's `visible` is toggled off when firewalld isn't present
+    // (root.firewallAvailable). This keeps `tabs.currentIndex` (0..5) mapping
+    // 1:1 onto StackLayout's positional children at all times; nothing is
+    // added/removed from either list, so there is no index to misalign.
+    // Qt Quick's Row-based TabBar content simply skips invisible children
+    // when positioning, so the hidden button doesn't leave a dead click
+    // target, and the (hidden) button can't be clicked to reach index 5.
+    //
+    // The StackLayout's FirewallTab child is deliberately NOT given a
+    // `visible:` binding here: StackLayout imperatively manages the
+    // `visible` property of its direct children itself (true only for the
+    // current index) whenever currentIndex changes, which would silently
+    // clear any QML binding we set on that same property. Instead,
+    // FirewallTab.qml hides its own content internally (a grandchild, not a
+    // direct StackLayout child, so no such conflict) and shows a "not
+    // available" hint in its place -- see FirewallTab.qml.
     fullRepresentation: ColumnLayout {
         Layout.minimumWidth: Kirigami.Units.gridUnit * 20
         Layout.minimumHeight: Kirigami.Units.gridUnit * 18
@@ -248,7 +275,7 @@ PlasmoidItem {
             PlasmaComponents3.TabButton { text: "Mode" }
             PlasmaComponents3.TabButton { text: "Remote Access" }
             PlasmaComponents3.TabButton { text: "Services" }
-            PlasmaComponents3.TabButton { text: "Firewall" }
+            PlasmaComponents3.TabButton { text: "Firewall"; visible: root.firewallAvailable }
         }
         StackLayout {
             Layout.fillWidth: true

@@ -10,6 +10,18 @@
  * (msw-firewall, the privileged helper enforces the LAN restriction). No bare
  * root/exec access: this file doesn't see `root`/`exec` from main.qml (no
  * global scope between separate .qml files).
+ *
+ * Graceful degradation: the Firewall TabButton in main.qml is hidden
+ * whenever firewalld isn't present (root.firewallAvailable), so this tab is
+ * normally unreachable in that case. As a defence-in-depth fallback (e.g. if
+ * firewalld happens to disappear while this tab is already selected), all
+ * the actual firewall content below is wrapped in an inner `available`
+ * ColumnLayout instead of being bound directly on this file's root item --
+ * this root ColumnLayout is StackLayout's direct child in main.qml, and
+ * StackLayout manages its direct children's `visible` property itself
+ * (imperatively, based on currentIndex), which would silently clear any
+ * `visible:` binding set here at this level. The inner ColumnLayout is a
+ * grandchild instead, so no such conflict applies.
  */
 import QtQuick
 import QtQuick.Layouts
@@ -27,6 +39,10 @@ ColumnLayout {
     // undefined until then) -- same pattern as RemoteAccessTab (r/sshState).
     readonly property var fw: (ctrl.status && ctrl.status.firewall)
         || ({ zone: null, lan_ifaces: [], high_ports_open: false, ssh_allowed: false, apps: {} })
+
+    // firewalld not present at all (zone stays null when firewall-cmd is
+    // missing or firewalld isn't running -- see msw-status).
+    readonly property bool available: !!firewallTab.fw.zone
 
     function appBlocked(id) {
         return !!(fw.apps && fw.apps[id] && fw.apps[id].blocked);
@@ -51,86 +67,104 @@ ColumnLayout {
         color: on ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.disabledTextColor
     }
 
-    // --- A. Status area (read-only) -------------------------------------------
+    // Fallback hint: only reachable if this tab was already selected when
+    // firewalld disappeared (the TabButton itself is hidden by main.qml).
     PlasmaComponents3.Label {
-        text: "Firewall (LAN)"
-        font.bold: true
+        Layout.fillWidth: true
+        visible: !firewallTab.available
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter
+        opacity: 0.7
+        text: "Firewall (firewalld) is not available on this system."
     }
 
-    GridLayout {
+    ColumnLayout {
         Layout.fillWidth: true
-        columns: 2
-        rowSpacing: Kirigami.Units.smallSpacing / 2
-        columnSpacing: Kirigami.Units.largeSpacing
-
-        PlasmaComponents3.Label { text: "Zone:"; opacity: 0.7 }
-        PlasmaComponents3.Label { text: firewallTab.fw.zone || "?" }
-
-        PlasmaComponents3.Label { text: "LAN interfaces:"; opacity: 0.7 }
-        PlasmaComponents3.Label { text: (firewallTab.fw.lan_ifaces || []).join(", ") || "—" }
-
-        PlasmaComponents3.Label { text: "High ports (1025–65535):"; opacity: 0.7 }
-        PlasmaComponents3.Label { text: firewallTab.fw.high_ports_open ? "open" : "blocked" }
-    }
-
-    RowLayout {
-        Layout.fillWidth: true
+        Layout.fillHeight: true
+        visible: firewallTab.available
         spacing: Kirigami.Units.smallSpacing
 
-        Kirigami.Icon {
-            source: "lock"
-            Layout.preferredWidth: Kirigami.Units.iconSizes.small
-            Layout.preferredHeight: Kirigami.Units.iconSizes.small
-        }
+        // --- A. Status area (read-only) ---------------------------------------
         PlasmaComponents3.Label {
-            Layout.fillWidth: true
-            text: "SSH: " + (firewallTab.fw.ssh_allowed ? "allowed" : "?") + " (not switchable)"
+            text: "Firewall (LAN)"
+            font.bold: true
         }
-    }
 
-    PlasmaComponents3.Label {
-        Layout.fillWidth: true
-        wrapMode: Text.WordWrap
-        opacity: 0.7
-        font: Kirigami.Theme.smallFont
-        text: "The Tailnet is separate (tailscale0, no zone) and always stays reachable — "
-              + "LAN blocks only affect the LAN interfaces above."
-    }
+        GridLayout {
+            Layout.fillWidth: true
+            columns: 2
+            rowSpacing: Kirigami.Units.smallSpacing / 2
+            columnSpacing: Kirigami.Units.largeSpacing
 
-    Kirigami.Separator { Layout.fillWidth: true }
+            PlasmaComponents3.Label { text: "Zone:"; opacity: 0.7 }
+            PlasmaComponents3.Label { text: firewallTab.fw.zone || "?" }
 
-    // --- B. App blocks (the four whitelisted apps) -----------------------------
-    Repeater {
-        model: firewallTab.apps
+            PlasmaComponents3.Label { text: "LAN interfaces:"; opacity: 0.7 }
+            PlasmaComponents3.Label { text: (firewallTab.fw.lan_ifaces || []).join(", ") || "—" }
 
-        delegate: RowLayout {
-            id: appRow
-            required property var modelData
+            PlasmaComponents3.Label { text: "High ports (1025–65535):"; opacity: 0.7 }
+            PlasmaComponents3.Label { text: firewallTab.fw.high_ports_open ? "open" : "blocked" }
+        }
+
+        RowLayout {
             Layout.fillWidth: true
             spacing: Kirigami.Units.smallSpacing
 
-            readonly property bool blocked: firewallTab.appBlocked(modelData.id)
-
-            StatusDot { on: !appRow.blocked }
-
-            ColumnLayout {
-                spacing: 0
-                Layout.fillWidth: true
-                PlasmaComponents3.Label { text: appRow.modelData.label + " " + appRow.modelData.detail }
-                PlasmaComponents3.Label {
-                    text: appRow.blocked ? "LAN: blocked" : "LAN: allowed"
-                    opacity: 0.7
-                    font: Kirigami.Theme.smallFont
-                }
+            Kirigami.Icon {
+                source: "lock"
+                Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                Layout.preferredHeight: Kirigami.Units.iconSizes.small
             }
-
-            PlasmaComponents3.Button {
-                text: appRow.blocked ? "allow" : "block"
-                icon.name: appRow.blocked ? "dialog-ok" : "network-disconnect"
-                onClicked: ctrl.firewallCmd((appRow.blocked ? "allow " : "block ") + appRow.modelData.id)
+            PlasmaComponents3.Label {
+                Layout.fillWidth: true
+                text: "SSH: " + (firewallTab.fw.ssh_allowed ? "allowed" : "?") + " (not switchable)"
             }
         }
-    }
 
-    Item { Layout.fillHeight: true }
+        PlasmaComponents3.Label {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            opacity: 0.7
+            font: Kirigami.Theme.smallFont
+            text: "The Tailnet is separate (tailscale0, no zone) and always stays reachable — "
+                  + "LAN blocks only affect the LAN interfaces above."
+        }
+
+        Kirigami.Separator { Layout.fillWidth: true }
+
+        // --- B. App blocks (the four whitelisted apps) -------------------------
+        Repeater {
+            model: firewallTab.apps
+
+            delegate: RowLayout {
+                id: appRow
+                required property var modelData
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+
+                readonly property bool blocked: firewallTab.appBlocked(modelData.id)
+
+                StatusDot { on: !appRow.blocked }
+
+                ColumnLayout {
+                    spacing: 0
+                    Layout.fillWidth: true
+                    PlasmaComponents3.Label { text: appRow.modelData.label + " " + appRow.modelData.detail }
+                    PlasmaComponents3.Label {
+                        text: appRow.blocked ? "LAN: blocked" : "LAN: allowed"
+                        opacity: 0.7
+                        font: Kirigami.Theme.smallFont
+                    }
+                }
+
+                PlasmaComponents3.Button {
+                    text: appRow.blocked ? "allow" : "block"
+                    icon.name: appRow.blocked ? "dialog-ok" : "network-disconnect"
+                    onClicked: ctrl.firewallCmd((appRow.blocked ? "allow " : "block ") + appRow.modelData.id)
+                }
+            }
+        }
+
+        Item { Layout.fillHeight: true }
+    }
 }

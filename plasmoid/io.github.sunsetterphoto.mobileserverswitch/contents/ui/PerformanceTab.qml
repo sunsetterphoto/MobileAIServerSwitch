@@ -39,9 +39,16 @@ ColumnLayout {
         return ctrl.perfProfile === preset.id && inBand(preset.target);
     }
 
+    // Presets need PowerProfiles (org.freedesktop.UPower.PowerProfiles) to
+    // apply a profile; msw-status reports perf.profile "?" when that D-Bus
+    // service isn't available. The fine cap has no equivalent readable
+    // signal of its own (msw-status silently falls back to a plausible
+    // default when intel_pstate's max_perf_pct can't be read) -- so per the
+    // task brief it is gated on the same perf.profile signal.
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
+        visible: ctrl.perfProfile !== "?"
         Repeater {
             model: performanceTab.presets
             delegate: PlasmaComponents3.Button {
@@ -57,6 +64,7 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
+        visible: ctrl.perfProfile !== "?"
         PlasmaComponents3.Label { text: "CPU cap"; opacity: 0.7 }
         PlasmaComponents3.Slider {
             id: capSlider
@@ -96,13 +104,15 @@ ColumnLayout {
 
     // Local fallbacks until the first poll completes (ctrl.status.gpu/.power_extra
     // are undefined until then).
-    readonly property var gpuState: (ctrl.status && ctrl.status.gpu) || ({ awake: false, watts: null, dstate: "?", control: "?" })
+    readonly property var gpuState: (ctrl.status && ctrl.status.gpu) || ({ present: false, awake: false, watts: null, dstate: "?", control: "?" })
     readonly property var powerExtra: (ctrl.status && ctrl.status.power_extra) || ({ epp: "?", wifi: "?", bt: "?" })
 
-    // dGPU
+    // dGPU -- hidden entirely when there's no discrete GPU on this system
+    // (msw-status gpu.present, PCI device 0000:01:00.0 absent).
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
+        visible: performanceTab.gpuState.present === true
         PlasmaComponents3.Label { text: "dGPU"; opacity: 0.7 }
         ColumnLayout {
             Layout.fillWidth: true
@@ -131,10 +141,11 @@ ColumnLayout {
         }
     }
 
-    // WiFi
+    // WiFi -- hidden when the value is absent/"?" (e.g. no rfkill wifi radio).
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
+        visible: performanceTab.powerExtra.wifi === "on" || performanceTab.powerExtra.wifi === "off"
         PlasmaComponents3.Label { text: "WiFi"; opacity: 0.7 }
         PlasmaComponents3.Label {
             Layout.fillWidth: true
@@ -146,10 +157,11 @@ ColumnLayout {
         }
     }
 
-    // Bluetooth
+    // Bluetooth -- hidden when the value is absent/"?" (e.g. no rfkill bt radio).
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
+        visible: performanceTab.powerExtra.bt === "on" || performanceTab.powerExtra.bt === "off"
         PlasmaComponents3.Label { text: "Bluetooth"; opacity: 0.7 }
         PlasmaComponents3.Label {
             Layout.fillWidth: true
@@ -161,10 +173,13 @@ ColumnLayout {
         }
     }
 
-    // EPP (energy bias)
+    // EPP (energy bias) -- hidden when unreadable (msw-status reports "?"
+    // when the cpufreq energy_performance_preference sysfs file is absent,
+    // e.g. non-Intel CPU or unsupported governor).
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
+        visible: !!performanceTab.powerExtra.epp && performanceTab.powerExtra.epp !== "?"
         PlasmaComponents3.Label { text: "Energy bias (EPP)"; opacity: 0.7 }
         PlasmaComponents3.ComboBox {
             id: eppCombo

@@ -39,7 +39,7 @@ ColumnLayout {
     // Local fallbacks until the first poll completes (ctrl.status is still {}
     // until then) -- same pattern as PerformanceTab (gpuState/powerExtra) and
     // RemoteAccessTab (r/sshState/...).
-    readonly property var gpuState: (ctrl.status && ctrl.status.gpu) || ({ awake: false, watts: null, dstate: "?" })
+    readonly property var gpuState: (ctrl.status && ctrl.status.gpu) || ({ present: false, awake: false, watts: null, dstate: "?" })
     readonly property var powerState: (ctrl.status && ctrl.status.power) || ({})
     readonly property var remote: (ctrl.status && ctrl.status.remote) || ({})
     readonly property var sshState: (remote.ssh) || ({})
@@ -153,8 +153,15 @@ ColumnLayout {
             PlasmaComponents3.Label { text: "Performance:"; opacity: 0.7 }
             PlasmaComponents3.Label { text: ctrl.perfProfile + " · " + ctrl.maxPerfPct + " %" }
 
-            PlasmaComponents3.Label { text: "dGPU:"; opacity: 0.7 }
+            // dGPU row: hidden entirely when there's no discrete GPU
+            // (msw-status gpu.present). Both cells share the same visible
+            // condition so the GridLayout reflows cleanly without a gap.
             PlasmaComponents3.Label {
+                text: "dGPU:"; opacity: 0.7
+                visible: overviewTab.gpuState.present === true
+            }
+            PlasmaComponents3.Label {
+                visible: overviewTab.gpuState.present === true
                 text: overviewTab.gpuState.awake
                       ? "▲ " + (overviewTab.gpuState.watts !== null && overviewTab.gpuState.watts !== undefined
                                 ? overviewTab.gpuState.watts + " W" : "active")
@@ -196,6 +203,8 @@ ColumnLayout {
                 detail: overviewTab.sunshineState.active ? "running" : "off"
             }
             PlasmaComponents3.Label {
+                visible: overviewTab.tailscaleState.active === true
+                         && !!overviewTab.tailscaleState.ip4 && overviewTab.tailscaleState.ip4 !== "?"
                 text: "Tailnet: " + (overviewTab.tailscaleState.ip4 || "—")
                 opacity: 0.7
                 font: Kirigami.Theme.smallFont
