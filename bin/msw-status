@@ -210,6 +210,7 @@ if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
             scope=$(jq -r '.scope // "user"' <<<"$svc")
             port=$(jq -r '.port // 0' <<<"$svc")
             [ -z "$unit" ] && continue   # malformed entry (no unit) -> skip
+            [ -z "$id" ] && continue     # malformed entry (no id) -> skip
             SERVICES_ROWS+=$(svc_row "$id" "$label" "$unit" "$scope" "$port")
             SERVICES_ROWS+=$'\n'
         done <<< "$CONFIG_SERVICES"
