@@ -37,7 +37,23 @@ PlasmoidItem {
 
     // Prefix so the CLIs are found regardless of the shell's PATH (see file
     // header comment). Every exec.run() call below wraps its command in this.
-    readonly property string pathPrefix: "PATH=\"$HOME/.local/bin:$PATH\" "
+    //
+    // `export PATH=...;` (statement form, not the `VAR=val cmd` inline-prefix
+    // form used previously) so the override applies to an entire command
+    // *line* handed to `/bin/sh -c`, not just its first word -- required
+    // since persistConfig() below runs a 3-stage pipeline
+    // (printf | base64 | msw-config-write), and an inline `VAR=val` prefix
+    // only scopes to the first simple command of a pipeline, not the rest of
+    // it. configuration.binPath (General settings page) lets a user override
+    // the auto-detected directory if it ever picks the wrong one; when unset
+    // (default "") the auto chain ($HOME/.local/bin, then /usr/local/bin,
+    // per the design doc) is used, unchanged from before this task.
+    readonly property string pathPrefix: {
+        var bp = Plasmoid.configuration.binPath;
+        var dirs = (bp && bp.length > 0) ? [bp] : [];
+        dirs.push("$HOME/.local/bin", "/usr/local/bin");
+        return "export PATH=\"" + dirs.join(":") + ":$PATH\"; ";
+    }
 
     readonly property string tool: "msw-mode"
     readonly property string statusTool: "msw-status"
@@ -186,6 +202,122 @@ PlasmoidItem {
     // tabs don't see them directly -- hence via ctrl.runAndRefresh.
     function runAndRefresh(cmd) {
         exec.run(cmd, function(){ refresh(); });
+    }
+
+    // --- Settings persistence (config.json writer) ----------------------------
+    // The settings dialog (config/config.qml + ui/config*.qml) only edits
+    // `plasmoid.configuration.*` flat KConfigXT keys -- QML has no direct
+    // filesystem access, so the only way any of that reaches
+    // ~/.config/mobileserverswitch/config.json (the file the CLIs actually
+    // read) is through the "executable" DataSource, i.e. through
+    // bin/msw-config-write, exactly like every other CLI invocation here.
+    //
+    // buildConfigJson() reassembles the nested shape config.json/the CLIs
+    // expect (see config/config.example.json) from the flat keys. The three
+    // *Json entries (servicesJson/stopOnLaptopJson/firewallAppsJson) are
+    // themselves JSON-array strings (KConfigXT has no native list-of-object
+    // type), parsed back into real arrays here.
+    function buildConfigJson() {
+        var c = Plasmoid.configuration;
+        function parseArray(s) {
+            try {
+                var a = JSON.parse(s);
+                return Array.isArray(a) ? a : [];
+            } catch (e) {
+                return [];
+            }
+        }
+        return {
+            network: {
+                lan_interfaces: c.lanInterfaces,
+                tailscale: c.tailscale,
+                firewall_zone: c.firewallZone
+            },
+            services: parseArray(c.servicesJson),
+            mode: {
+                enabled: c.modeEnabled,
+                charge_thresholds: {
+                    enabled: c.chargeThresholdsEnabled,
+                    server: c.chargeServer,
+                    laptop: c.chargeLaptop
+                },
+                stop_on_laptop: parseArray(c.stopOnLaptopJson)
+            },
+            firewall: {
+                apps: parseArray(c.firewallAppsJson)
+            },
+            remote: {
+                rdp: { enabled: c.rdpEnabled, bind: c.rdpBind }
+            },
+            features: {
+                performance: c.showPerformance,
+                mode: c.showMode,
+                remote: c.showRemote,
+                services: c.showServices,
+                firewall: c.showFirewall
+            }
+        };
+    }
+
+    // btoa()/base64 round-trip (not a plain quoted string) so the JSON blob
+    // can never break out of/corrupt the shell command line regardless of
+    // its content (quotes, backslashes, newlines from multi-line labels,
+    // etc.) -- base64's alphabet (A-Za-z0-9+/=) is entirely shell-safe even
+    // inside single quotes. Qt.btoa() alone only handles Latin1 (like
+    // browser btoa()); encodeURIComponent+unescape first re-packs the JSON
+    // string's UTF-8 bytes into that Latin1-range "binary string" so
+    // non-ASCII service labels/ids survive intact.
+    function persistConfig() {
+        var json = JSON.stringify(root.buildConfigJson());
+        var b64 = Qt.btoa(unescape(encodeURIComponent(json)));
+        exec.run("printf '%s' '" + b64 + "' | base64 -d | msw-config-write",
+            function(out, err, code) {
+                if (code !== 0)
+                    console.warn("msw-config-write failed (exit " + code + "):", err || out);
+            });
+    }
+
+    // Coalesces a whole Apply/OK click (which can change several
+    // Plasmoid.configuration keys at once, each firing its own onXChanged
+    // below) into a single msw-config-write invocation instead of one per
+    // changed key.
+    Timer {
+        id: persistDebounce
+        interval: 50
+        repeat: false
+        onTriggered: root.persistConfig()
+    }
+    function requestPersist() { persistDebounce.restart(); }
+
+    // Plasmoid.configuration.* only updates on Apply/OK (the config dialog
+    // edits its own `cfg_*` working copies until then), so one
+    // requestPersist() call per relevant key here means one write per saved
+    // change, not per keystroke. `binPath` is deliberately NOT listed: it is
+    // plasmoid-only (CLI tool resolution, see pathPrefix above), never part
+    // of config.json. Per-property notify-signal convention
+    // (`on<PascalCaseName>Changed`) verified against
+    // org.kde.desktopcontainment/ui/FolderViewLayer.qml and FolderView.qml,
+    // which both wire `Connections { target: Plasmoid.configuration;
+    // function on<Name>Changed() {...} }` the same way.
+    Connections {
+        target: Plasmoid.configuration
+        function onLanInterfacesChanged() { root.requestPersist(); }
+        function onTailscaleChanged() { root.requestPersist(); }
+        function onFirewallZoneChanged() { root.requestPersist(); }
+        function onServicesJsonChanged() { root.requestPersist(); }
+        function onModeEnabledChanged() { root.requestPersist(); }
+        function onChargeThresholdsEnabledChanged() { root.requestPersist(); }
+        function onChargeServerChanged() { root.requestPersist(); }
+        function onChargeLaptopChanged() { root.requestPersist(); }
+        function onStopOnLaptopJsonChanged() { root.requestPersist(); }
+        function onFirewallAppsJsonChanged() { root.requestPersist(); }
+        function onRdpEnabledChanged() { root.requestPersist(); }
+        function onRdpBindChanged() { root.requestPersist(); }
+        function onShowPerformanceChanged() { root.requestPersist(); }
+        function onShowModeChanged() { root.requestPersist(); }
+        function onShowRemoteChanged() { root.requestPersist(); }
+        function onShowServicesChanged() { root.requestPersist(); }
+        function onShowFirewallChanged() { root.requestPersist(); }
     }
 
     Component.onCompleted: refresh()

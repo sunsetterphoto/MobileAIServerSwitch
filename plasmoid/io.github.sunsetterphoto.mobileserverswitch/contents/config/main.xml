@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+
+  <group name="General">
+    <!-- Directory the plasmoid looks for the msw-* CLIs in. Empty = auto
+         ($HOME/.local/bin, falling back to /usr/local/bin); see main.qml. -->
+    <entry name="binPath" type="String">
+      <default></default>
+    </entry>
+    <entry name="showPerformance" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="showMode" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="showRemote" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="showServices" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="showFirewall" type="Bool">
+      <default>true</default>
+    </entry>
+  </group>
+
+  <group name="Network">
+    <!-- "auto" = runtime auto-detection (see bin/msw-config); only a
+         non-"auto" value here overrides detection. -->
+    <entry name="lanInterfaces" type="String">
+      <default>auto</default>
+    </entry>
+    <entry name="tailscale" type="String">
+      <default>auto</default>
+    </entry>
+    <entry name="firewallZone" type="String">
+      <default>auto</default>
+    </entry>
+  </group>
+
+  <group name="Services">
+    <!-- JSON array of {id,label,unit,scope,port}; maps to config.json's
+         top-level "services" array. Edited via ui/configServices.qml. -->
+    <entry name="servicesJson" type="String">
+      <default>[]</default>
+    </entry>
+  </group>
+
+  <group name="Mode">
+    <entry name="modeEnabled" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="chargeThresholdsEnabled" type="Bool">
+      <default>false</default>
+    </entry>
+    <entry name="chargeServer" type="String">
+      <default>40/80</default>
+    </entry>
+    <entry name="chargeLaptop" type="String">
+      <default>0/100</default>
+    </entry>
+    <!-- JSON array of service ids (strings); maps to config.json's
+         mode.stop_on_laptop array. -->
+    <entry name="stopOnLaptopJson" type="String">
+      <default>[]</default>
+    </entry>
+  </group>
+
+  <group name="Firewall">
+    <!-- JSON array of {id,ports_tcp?,ports_udp?}; maps to config.json's
+         firewall.apps array. Default mirrors config/config.example.json. -->
+    <entry name="firewallAppsJson" type="String">
+      <default>[{"id":"rdp","ports_tcp":"3389"},{"id":"vnc","ports_tcp":"5900-5903"}]</default>
+    </entry>
+  </group>
+
+  <group name="Remote">
+    <entry name="rdpEnabled" type="String">
+      <default>auto</default>
+    </entry>
+    <entry name="rdpBind" type="String">
+      <default>tailscale</default>
+    </entry>
+  </group>
+
+</kcfg>
