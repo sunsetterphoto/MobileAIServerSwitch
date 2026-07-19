@@ -2,6 +2,34 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . tests/lib.sh
+
+# --- Config backup/restore (real path -- msw-status has no test-only ---------
+#     override for it). Any pre-existing config on this host is backed up and
+#     restored via the EXIT trap -- this must never leave the host's config
+#     altered or a stray temp file behind, whether the test passes or an
+#     assert exits early. The base assertions below need a known "no config"
+#     starting state (default firewall app whitelist = rdp+vnc only), so the
+#     backup/restore setup runs BEFORE the first `msw-status --json` call.
+CFG_DIR="$HOME/.config/mobileserverswitch"
+CFG_FILE="$CFG_DIR/config.json"
+CFG_BACKUP=""
+if [ -e "$CFG_FILE" ]; then
+    CFG_BACKUP=$(mktemp)
+    cp "$CFG_FILE" "$CFG_BACKUP"
+fi
+restore_cfg() {
+    if [ -n "$CFG_BACKUP" ]; then
+        mkdir -p "$CFG_DIR"
+        cp "$CFG_BACKUP" "$CFG_FILE"
+        rm -f "$CFG_BACKUP"
+    else
+        rm -f "$CFG_FILE"
+        rmdir "$CFG_DIR" 2>/dev/null || true
+    fi
+}
+trap restore_cfg EXIT
+rm -f "$CFG_FILE"   # start from "no config" for the base assertions below
+
 J=$(bin/msw-status --json)
 # valid JSON?
 assert "jq -e . >/dev/null 2>&1 <<<\"\$J\"" "output is valid JSON"
@@ -32,40 +60,26 @@ p=$(jq -r '.perf.max_perf_pct' <<<"$J")
 assert "[ \"\$p\" -ge 16 ] && [ \"\$p\" -le 100 ]" "max_perf_pct in [16,100] (is $p)"
 # Firewall (read-only check -- this test does not change firewall state)
 assert "jq -e '.firewall' >/dev/null <<<\"\$J\""                      "has .firewall"
+# firewall.apps is config-driven (config.firewall.apps); default (no config,
+# as ensured above) is exactly rdp+vnc -- nothing hardcoded to
+# sunshine/comfyui here anymore.
 assert "jq -e '.firewall.apps.rdp.blocked | type == \"boolean\"' >/dev/null <<<\"\$J\""      "firewall.apps.rdp.blocked is bool"
 assert "jq -e '.firewall.apps.vnc.blocked | type == \"boolean\"' >/dev/null <<<\"\$J\""      "firewall.apps.vnc.blocked is bool"
-assert "jq -e '.firewall.apps.sunshine.blocked | type == \"boolean\"' >/dev/null <<<\"\$J\"" "firewall.apps.sunshine.blocked is bool"
-assert "jq -e '.firewall.apps.comfyui.blocked | type == \"boolean\"' >/dev/null <<<\"\$J\""  "firewall.apps.comfyui.blocked is bool"
+assert "jq -e '.firewall.apps | (has(\"sunshine\") | not)' >/dev/null <<<\"\$J\""            "firewall.apps has no hardcoded sunshine entry by default"
+assert "jq -e '.firewall.apps | (has(\"comfyui\") | not)' >/dev/null <<<\"\$J\""             "firewall.apps has no hardcoded comfyui entry by default"
 assert "jq -e '.firewall.high_ports_open | type == \"boolean\"' >/dev/null <<<\"\$J\""       "firewall.high_ports_open is bool"
 assert "jq -e '.firewall.ssh_allowed == true' >/dev/null <<<\"\$J\""                          "firewall.ssh_allowed == true"
 
-# --- Config-driven services: temp config with one service entry ----------------
-# Uses the real config path (msw-status has no test-only override for it), so
-# any pre-existing config on this host is backed up and restored via the EXIT
-# trap -- this must never leave the host's config altered or a stray temp file
-# behind, whether the test passes or an assert exits early.
-CFG_DIR="$HOME/.config/mobileserverswitch"
-CFG_FILE="$CFG_DIR/config.json"
-CFG_BACKUP=""
-if [ -e "$CFG_FILE" ]; then
-    CFG_BACKUP=$(mktemp)
-    cp "$CFG_FILE" "$CFG_BACKUP"
-fi
-restore_cfg() {
-    if [ -n "$CFG_BACKUP" ]; then
-        mkdir -p "$CFG_DIR"
-        cp "$CFG_BACKUP" "$CFG_FILE"
-        rm -f "$CFG_BACKUP"
-    else
-        rm -f "$CFG_FILE"
-        rmdir "$CFG_DIR" 2>/dev/null || true
-    fi
-}
-trap restore_cfg EXIT
-
+# --- Config-driven services + firewall.apps: temp config with a custom -----
+#     service AND a custom firewall app (not rdp/vnc) -- assert both surface
+#     correctly and that the default rdp/vnc keys are gone once a config
+#     defines its own app list (whitelist is config-sourced, not additive).
 mkdir -p "$CFG_DIR"
 cat > "$CFG_FILE" <<'JSON'
-{ "services": [ { "id": "testsvc", "label": "Test Service", "unit": "test-svc.service", "scope": "user", "port": 9999 } ] }
+{
+  "services": [ { "id": "testsvc", "label": "Test Service", "unit": "test-svc.service", "scope": "user", "port": 9999 } ],
+  "firewall": { "apps": [ { "id": "myapp", "ports_tcp": "9999" } ] }
+}
 JSON
 
 J2=$(bin/msw-status --json)
@@ -74,5 +88,8 @@ assert "jq -e '.services[0].id == \"testsvc\"' >/dev/null <<<\"\$J2\""     "conf
 assert "jq -e '.services[0].unit == \"test-svc.service\"' >/dev/null <<<\"\$J2\"" "config-driven services: unit is carried through"
 assert "jq -e '.services[0] | has(\"active\")' >/dev/null <<<\"\$J2\""    "config-driven services: has active"
 assert "jq -e '.services[0] | has(\"exposure\")' >/dev/null <<<\"\$J2\""  "config-driven services: has exposure"
+assert "jq -e '.firewall.apps | has(\"myapp\")' >/dev/null <<<\"\$J2\""              "config-driven firewall.apps: custom app id present"
+assert "jq -e '.firewall.apps.myapp.blocked | type == \"boolean\"' >/dev/null <<<\"\$J2\"" "config-driven firewall.apps: myapp.blocked is bool"
+assert "jq -e '.firewall.apps | (has(\"rdp\") | not)' >/dev/null <<<\"\$J2\""        "config-driven firewall.apps: default rdp key gone once config defines its own apps"
 
 pass

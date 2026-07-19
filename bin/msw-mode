@@ -21,7 +21,17 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # msw-charge-thresholds.service reads it at boot and must not depend on a
 # user home being available.
 STATE_FILE=/var/lib/mobileserverswitch/mode
-BAT=/sys/class/power_supply/BAT0
+
+# First battery exposing charge-threshold sysfs support (generic -- not
+# hardcoded to BAT0; matches the detection in msw-charge-apply). Empty if no
+# such battery exists (display only, mode_status guards on this below).
+BAT=""
+for _d in /sys/class/power_supply/*/; do
+    [ -e "${_d}charge_control_start_threshold" ] || continue
+    BAT=${_d%/}
+    break
+done
+unset _d
 
 # PowerDevil action values (daemon/powerdevilenums.h)
 readonly ACT_NONE=0 ACT_SLEEP=1 ACT_SHUTDOWN=8 ACT_PROMPT=16
@@ -84,20 +94,38 @@ set_locker() {  # set_locker <autolock> <timeout_min>
         || warn "kwin reconfigure failed"
 }
 
-# --- Services -------------------------------------------------------------------
-# ON_DEMAND: never start automatically - the user starts them deliberately
-#   (also possible via SSH). Sunshine keeps the dGPU awake permanently via
-#   NVENC (measured: 0 ms sleep). The integrated GPU can't encode H.264/HEVC
-#   (only JPEG), so there is no alternative that would let the dGPU sleep.
-#   Hence: no autostart.
-#   Start manually: systemctl --user start app-dev.lizardbyte.app.Sunshine
-ON_DEMAND_UNITS=(
-    app-dev.lizardbyte.app.Sunshine.service
-)
-
-# HEAVY: run in server mode, sleep in laptop mode.
-# TODO(task3): populate from config.mode.stop_on_laptop instead of hardcoding.
-HEAVY_UNITS=()
+# --- Services (config-driven) --------------------------------------------------
+# config.mode.stop_on_laptop: list of entries, each either a bare systemd
+# unit name (e.g. "myapp.service") or a config.services[].id (resolved to
+# that service's `unit`). These services are started when switching to
+# SERVER mode and stopped when switching to LAPTOP mode ("run heavy while
+# plugged in as a server, sleep while mobile"). Nothing is hardcoded here
+# anymore -- no baked-in Sunshine (or any other app) reference. Missing
+# config / missing key / empty list -> nothing is started or stopped.
+stop_on_laptop_units() {
+    local raw entry unit
+    command -v jq >/dev/null 2>&1 || return 0
+    [ -r "$MSW_CONFIG_FILE" ] || return 0
+    raw=$(jq -r '.mode.stop_on_laptop // [] | .[]' "$MSW_CONFIG_FILE" 2>/dev/null)
+    [ -z "$raw" ] && return 0
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        case "$entry" in
+            *.service|*.socket|*.timer|*@*)
+                printf '%s\n' "$entry"
+                ;;
+            *)
+                # Not unit-shaped -- treat as a config.services[] id and
+                # resolve to its unit; if that lookup fails, fall through
+                # and try the entry as-is (systemctl will simply report it
+                # as not installed, same as any other unknown unit).
+                unit=$(jq -r --arg id "$entry" '(.services // [])[] | select(.id == $id) | .unit // empty' "$MSW_CONFIG_FILE" 2>/dev/null)
+                printf '%s\n' "${unit:-$entry}"
+                ;;
+        esac
+    done <<< "$raw"
+}
+mapfile -t STOP_ON_LAPTOP_UNITS < <(stop_on_laptop_units)
 
 svc() {  # svc start|stop <unit...>
     local action=$1; shift
@@ -124,8 +152,8 @@ mode_server() {
     set_locker true 15
     log "  Lock: on start + after 15 min idle"
     persist_and_charge server
-    svc start "${HEAVY_UNITS[@]}"
-    log "SERVER mode active. (Sunshine does NOT start automatically - deliberately on demand)"
+    svc start "${STOP_ON_LAPTOP_UNITS[@]}"
+    log "SERVER mode active."
 }
 
 mode_laptop() {
@@ -136,7 +164,7 @@ mode_laptop() {
     log "  Lock: on start + after 5 min idle + on wake"
     # 0/100 = factory behavior: charge fully for travel / to run battery cycles
     persist_and_charge laptop
-    svc stop "${HEAVY_UNITS[@]}" "${ON_DEMAND_UNITS[@]}"
+    svc stop "${STOP_ON_LAPTOP_UNITS[@]}"
     log "LAPTOP mode active."
 }
 
@@ -162,15 +190,19 @@ mode_status() {
     echo "  locked:      $(loginctl show-session "$(loginctl list-sessions --no-legend | awk '$4=="seat0"{print $1;exit}')" -p LockedHint --value 2>/dev/null || echo '?')"
     echo "logind:"
     echo "  HandleLidSwitch: $(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager HandleLidSwitch 2>/dev/null | sed 's/^s //')"
-    echo "Services:"
+    echo "Services (config.mode.stop_on_laptop):"
     local u
-    for u in "${ON_DEMAND_UNITS[@]}" "${HEAVY_UNITS[@]}"; do
-        if systemctl --user cat "$u" &>/dev/null; then
-            echo "  $u: $(systemctl --user is-active "$u" 2>&1)"
-        else
-            echo "  $u: not installed"
-        fi
-    done
+    if [ "${#STOP_ON_LAPTOP_UNITS[@]}" -eq 0 ]; then
+        echo "  (none configured)"
+    else
+        for u in "${STOP_ON_LAPTOP_UNITS[@]}"; do
+            if systemctl --user cat "$u" &>/dev/null; then
+                echo "  $u: $(systemctl --user is-active "$u" 2>&1)"
+            else
+                echo "  $u: not installed"
+            fi
+        done
+    fi
     echo "Network:"
     # Look up 'metric' by label rather than field index - ip-route output has a
     # varying number of fields depending on protocol/source.
