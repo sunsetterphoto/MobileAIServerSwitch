@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# msw-config-write — writes ~/.config/mobileserverswitch/config.json from a
+# JSON object read on stdin.
+#
+# This is the ONLY write path from the plasmoid's settings UI into the config
+# file the CLIs read: QML has no direct filesystem access, so the settings
+# dialog (config/config.qml + ui/config*.qml) assembles the nested config
+# shape in JavaScript and pipes it to this CLI via the "executable" DataSource
+# (see plasmoid ui/main.qml). Never invoked with sudo -- it writes to the
+# invoking user's own config, unprivileged, same as every other msw-* reader.
+#
+# Atomic: temp file (same directory, so same filesystem) + rename, so a
+# concurrently-running msw-* reader never observes a partially-written file.
+# Validates the input is a JSON object before touching anything on disk --
+# invalid input leaves the existing config file untouched and exits 1.
+#
+#   echo '{"services":[...]}' | msw-config-write
+set -uo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+# shellcheck source=./msw-config
+. "$SCRIPT_DIR/msw-config"
+
+command -v jq >/dev/null 2>&1 || { echo "msw-config-write: jq is required" >&2; exit 1; }
+
+input=$(cat)
+
+if ! printf '%s' "$input" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "msw-config-write: stdin is not a valid JSON object" >&2
+    exit 1
+fi
+
+target="$MSW_CONFIG_FILE"
+dir=$(dirname "$target")
+
+mkdir -p "$dir" || { echo "msw-config-write: cannot create $dir" >&2; exit 1; }
+
+tmp=$(mktemp "$dir/.config.json.XXXXXX") || { echo "msw-config-write: mktemp failed" >&2; exit 1; }
+trap 'rm -f "$tmp"' EXIT
+
+if ! printf '%s' "$input" | jq '.' > "$tmp"; then
+    echo "msw-config-write: jq formatting failed" >&2
+    exit 1
+fi
+
+mv -f "$tmp" "$target"
+trap - EXIT
