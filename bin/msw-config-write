@@ -14,6 +14,19 @@
 # Validates the input is a JSON object before touching anything on disk --
 # invalid input leaves the existing config file untouched and exits 1.
 #
+# Deep-merge, not overwrite: the settings UI (plasmoid) only round-trips the
+# keys it knows about (network/services/mode/firewall/remote/features -- see
+# main.qml buildConfigJson()). Keys a user has hand-added to config.json that
+# the UI doesn't model yet (e.g. an older/newer network.wol_nic) must survive
+# a settings-dialog Apply/OK, so when an existing valid config.json object is
+# present, the incoming JSON is merged onto it with jq's `*` (recursive
+# object merge; arrays and scalars in the incoming side simply REPLACE the
+# existing side, they are not concatenated -- so services[]/
+# firewall.apps[]/mode.stop_on_laptop[] are still replaced wholesale by
+# whatever the UI just sent, exactly as before). If no existing valid config
+# object is present (missing file, or unparseable), the incoming JSON is
+# written as-is.
+#
 #   echo '{"services":[...]}' | msw-config-write
 set -uo pipefail
 
@@ -38,10 +51,17 @@ mkdir -p "$dir" || { echo "msw-config-write: cannot create $dir" >&2; exit 1; }
 tmp=$(mktemp "$dir/.config.json.XXXXXX") || { echo "msw-config-write: mktemp failed" >&2; exit 1; }
 trap 'rm -f "$tmp"' EXIT
 
-if ! printf '%s' "$input" | jq '.' > "$tmp"; then
-    echo "msw-config-write: jq formatting failed" >&2
-    exit 1
+if [ -s "$target" ] && jq -e 'type == "object"' "$target" >/dev/null 2>&1; then
+    if ! jq -s '.[0] * .[1]' "$target" <(printf '%s' "$input") > "$tmp"; then
+        echo "msw-config-write: jq merge failed" >&2
+        exit 1
+    fi
+else
+    if ! printf '%s' "$input" | jq '.' > "$tmp"; then
+        echo "msw-config-write: jq formatting failed" >&2
+        exit 1
+    fi
 fi
 
-mv -f "$tmp" "$target"
+mv -f "$tmp" "$target" || { echo "msw-config-write: mv failed" >&2; exit 1; }
 trap - EXIT
