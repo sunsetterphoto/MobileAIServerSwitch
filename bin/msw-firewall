@@ -9,8 +9,10 @@
 # msw-firewall-apply (sudo -n). Fine validation (whitelist, ssh block) is done
 # exclusively by the helper — this wrapper never passes anything through unfiltered.
 set -uo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+. "$SCRIPT_DIR/msw-config"
 APPLY=/usr/local/sbin/msw-firewall-apply
-ZONE=FedoraWorkstation   # TODO(task2): auto-detect (firewall-cmd --get-default-zone)
+ZONE=$(cfg_or_detect network.firewall_zone detect_firewall_zone)
 
 usage() { sed -n '2,10p' "$0" | sed 's/^# \?//'; }
 
@@ -25,6 +27,7 @@ case "${1:-}" in
         sudo -n "$APPLY" "$action" "$app"
         ;;
     status)
+        [ -n "$ZONE" ] || { echo "No firewalld default zone detected (firewalld absent/inactive?)" >&2; exit 1; }
         firewall-cmd --zone="$ZONE" --list-rich-rules
         ;;
     ""|-h|--help|help)
