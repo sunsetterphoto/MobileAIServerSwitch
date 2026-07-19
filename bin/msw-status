@@ -3,11 +3,14 @@
 # Single-source-of-truth interface between the CLIs and the plasmoid.
 set -uo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+. "$SCRIPT_DIR/msw-config"
+
 TAILNET_PREFIX="100."          # Tailscale CGNAT range 100.64.0.0/10
 BAT=/sys/class/power_supply/BAT0
 PSTATE=/sys/devices/system/cpu/intel_pstate
 GPU_DEV=/sys/bus/pci/devices/0000:01:00.0
-WOL_NIC=enp11s0                # TODO(task2): auto-detect (wired default-route interface)
+WOL_NIC=$(cfg_or_detect network.wol_nic detect_wol_nic)
 
 # --- Derive exposure of a TCP port from actually listening sockets -----------
 exposure_for_port() {  # $1 = port ; echo "localhost" | "Tailnet" | "LAN" | "LAN+Tailnet" | ""
@@ -75,8 +78,8 @@ BSTATUS=$(cat "$BAT/status" 2>/dev/null || echo "?")
 AC=$([ "$BSTATUS" = "Discharging" ] && echo false || echo true)
 
 # --- Tailscale -------------------------------------------------------------
-TS_IP4=$(tailscale ip -4 2>/dev/null | head -1); [ -z "$TS_IP4" ] && TS_IP4="?"
-TS_HOST=$(tailscale status --json 2>/dev/null | jq -r '.Self.HostName // empty' 2>/dev/null)
+TS_IP4=$(cfg_or_detect network.tailscale detect_tailnet_ip4); [ -z "$TS_IP4" ] && TS_IP4="?"
+TS_HOST=$(hostname 2>/dev/null)
 TS_ACTIVE=$([ "$TS_IP4" != "?" ] && echo true || echo false)
 TS_PEERS=$(tailscale status --json 2>/dev/null | jq '(.Peer // {}) | length' 2>/dev/null)
 if ! [[ "$TS_PEERS" =~ ^[0-9]+$ ]]; then TS_PEERS=0; fi
@@ -110,7 +113,7 @@ WOL=$(wol_json "$WOL_NIC")
 # readable) is evaluated. Every error branch (firewalld inactive, firewall-cmd
 # missing) still returns valid JSON with sensible defaults, exit stays 0 (same
 # pattern as gpu/power_extra/remote).
-FW_ZONE="FedoraWorkstation"     # TODO(task2): auto-detect (firewall-cmd --get-default-zone)
+FW_ZONE=$(cfg_or_detect network.firewall_zone detect_firewall_zone)
 FW_ACTIVE=false
 if command -v firewall-cmd >/dev/null 2>&1; then
     FW_STATE=$(firewall-cmd --state 2>/dev/null)
@@ -142,8 +145,10 @@ FW_COMFY_BLOCKED=$(grep -q 'port="8188"' <<<"$FW_RICH" && echo true || echo fals
 if [ -n "$FW_IFACES_RAW" ]; then
     FW_LAN_IFACES_JSON=$(jq -nc --arg s "$FW_IFACES_RAW" '$s | split(" ") | map(select(length>0))')
 else
-    # TODO(task2): auto-detect (default-route interfaces) instead of this fallback
-    FW_LAN_IFACES_JSON='["enp11s0","wlp9s0"]'
+    # firewalld inactive/absent or zone has no interfaces bound: fall back to
+    # detected (or config-overridden) default-route interfaces.
+    FW_LAN_IFACES_JSON=$(jq -nc --arg s "$(cfg_or_detect network.lan_interfaces detect_lan_ifaces)" \
+        '$s | split(" ") | map(select(length>0))')
 fi
 
 FW_APPS=$(jq -n \

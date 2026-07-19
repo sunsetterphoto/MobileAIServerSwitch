@@ -5,7 +5,9 @@
 # Every branch: validate -> write -> read back and check -> report success,
 # exit != 0 on mismatch (exception: NM persistence for wol, best-effort/warning only).
 set -uo pipefail
-NIC=enp11s0   # TODO(task2): auto-detect (wired default-route interface)
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+. "$SCRIPT_DIR/msw-config"
+NIC=$(cfg_or_detect network.wol_nic detect_wol_nic)
 GPU_CTRL=/sys/bus/pci/devices/0000:01:00.0/power/control
 EPP_AVAIL=/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_available_preferences
 ASPM_POLICY=/sys/module/pcie_aspm/parameters/policy
@@ -93,6 +95,7 @@ case "$WHAT" in
         ;;
 
     wol)
+        [ -n "$NIC" ] || { echo "wol: no wired default-route NIC detected (set network.wol_nic in config.json to override)" >&2; exit 1; }
         case "$VAL" in
             on)  ethtool -s "$NIC" wol g; WANT=g; NMVAL=magic  ;;
             off) ethtool -s "$NIC" wol d; WANT=d; NMVAL=ignore ;;

@@ -14,6 +14,9 @@
 
 set -uo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+. "$SCRIPT_DIR/msw-config"
+
 # State is deliberately NOT under ~/.local/state: the system unit
 # msw-charge-thresholds.service reads it at boot and must not depend on a
 # user home being available.
@@ -172,15 +175,19 @@ mode_status() {
     # Look up 'metric' by label rather than field index - ip-route output has a
     # varying number of fields depending on protocol/source.
     echo "  Default route: $(ip route | awk '/^default/{m="?"; for(i=1;i<=NF;i++) if($i=="metric") m=$(i+1); print $5" (metric "m")"; exit}')"
-    local carrier wol
-    # TODO(task2): auto-detect (wired default-route interface) instead of hardcoding
-    carrier=$(cat /sys/class/net/enp11s0/carrier 2>/dev/null || echo '?')
-    # '^[[:space:]]*Wake-on:' - otherwise it would also match the 'Supports Wake-on:' line
-    wol=$(sudo -n ethtool enp11s0 2>/dev/null | awk '/^[[:space:]]*Wake-on:/{print $2; exit}')
-    if [ "$carrier" = "1" ]; then
-        echo "  WoL:           ${wol:-?}  (cable plugged in)"
+    local nic carrier wol
+    nic=$(cfg_or_detect network.wol_nic detect_wol_nic)
+    if [ -z "$nic" ]; then
+        echo "  WoL:           ? (no wired default-route NIC detected)"
     else
-        echo "  WoL:           ${wol:-?}  (NO CABLE - WoL has no effect, value is only the driver default)"
+        carrier=$(cat "/sys/class/net/$nic/carrier" 2>/dev/null || echo '?')
+        # '^[[:space:]]*Wake-on:' - otherwise it would also match the 'Supports Wake-on:' line
+        wol=$(sudo -n ethtool "$nic" 2>/dev/null | awk '/^[[:space:]]*Wake-on:/{print $2; exit}')
+        if [ "$carrier" = "1" ]; then
+            echo "  WoL:           ${wol:-?}  ($nic, cable plugged in)"
+        else
+            echo "  WoL:           ${wol:-?}  ($nic, NO CABLE - WoL has no effect, value is only the driver default)"
+        fi
     fi
 }
 

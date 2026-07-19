@@ -9,17 +9,20 @@
 # - Defense in depth: in addition to the whitelist, the resolved ports of the
 #   chosen rule(s) are checked -- if port 22 is among them, the helper aborts
 #   immediately (no action). This also catches future typos in the table below.
-# - Only the LAN zone (TODO(task2): auto-detect the default zone instead of the
-#   fixed name below). Never touches interfaces/zones otherwise, never touches
-#   tailscale0 (zoneless -> Tailnet access always stays reachable, independent
-#   of this zone).
+# - Only the LAN zone (auto-detected: firewalld's default zone, overridable
+#   via config key network.firewall_zone). Never touches interfaces/zones
+#   otherwise, never touches tailscale0 (zoneless -> Tailnet access always
+#   stays reachable, independent of this zone).
 # - No --reload (could briefly disrupt running connections). Each rule is set/
 #   removed separately for runtime AND --permanent.
 # - Every branch: resolve -> check guard -> set/remove -> verify via
 #   --list-rich-rules readback -> report success, otherwise exit != 0 with a
 #   clear message (no silent partial state).
 set -uo pipefail
-ZONE=FedoraWorkstation   # TODO(task2): auto-detect (firewall-cmd --get-default-zone)
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+. "$SCRIPT_DIR/msw-config"
+ZONE=$(cfg_or_detect network.firewall_zone detect_firewall_zone)
+[ -n "$ZONE" ] || { echo "ERROR: no firewalld default zone detected (set network.firewall_zone in config.json to override) -- aborted, no action" >&2; exit 1; }
 
 ACTION=${1:?Usage: msw-firewall-apply <block|allow> <app>}
 APP=${2:?Usage: msw-firewall-apply <block|allow> <app>}

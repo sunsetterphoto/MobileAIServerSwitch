@@ -8,9 +8,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 . tests/lib.sh
 HELP=/usr/local/sbin/msw-firewall-apply
-ZONE=FedoraWorkstation
+ZONE=$(firewall-cmd --get-default-zone 2>/dev/null)
 
 assert "[ -x $HELP ]" "msw-firewall-apply is executable (deployed under /usr/local/sbin)"
+assert "[ -n \"$ZONE\" ]" "firewall-cmd --get-default-zone returned a zone (firewalld active)"
 
 rich() { firewall-cmd --zone="$ZONE" --list-rich-rules 2>/dev/null; }
 marker() { rich | grep -qE "$1" && echo yes || echo no; }   # $1 = grep -E pattern

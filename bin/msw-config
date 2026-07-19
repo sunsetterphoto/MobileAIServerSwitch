@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# msw-config — sourced helper library: config-file reader (jq) + runtime
+# auto-detection for network/firewall infrastructure values.
+#
+# NOT an executable entry point: other msw-* scripts `source`/`.` this file,
+# they never run it directly. Keep everything here side-effect-free (no set
+# -e/-u changes to the caller's shell options, no top-level output).
+#
+# Config file: ~/.config/mobileserverswitch/config.json (optional). Missing
+# file, missing key, null value, or missing `jq` -> caller-supplied default
+# (msw_cfg) or pure auto-detection (detect_*). See
+# .superpowers/specs/2026-07-19-public-release-design.md §2a for the full
+# config schema; this file implements the network.* keys consumed by
+# msw-status / msw-power-apply / msw-firewall-apply.
+#
+# "auto" resolution (design §2a): a config value of "auto" (or an empty/
+# missing key) means "use runtime auto-detection", exactly like an absent
+# config file. Only a real, non-"auto" value overrides detection.
+
+# --- Config file location ------------------------------------------------------
+# msw-power-apply/msw-firewall-apply run as root via `sudo -n`, which resets
+# $HOME to root's home by default (verified: `sudo -n bash -c 'echo $HOME'`
+# -> /root) -- but preserves $SUDO_USER. Resolve the *invoking* user's home so
+# the config override still applies when sourced from a privileged helper.
+_msw_config_home() {
+    local h=""
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        h=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+    fi
+    [ -z "$h" ] && h="$HOME"
+    printf '%s\n' "$h"
+}
+# Tests may override MSW_CONFIG_FILE directly to point at a fixture/absent path.
+MSW_CONFIG_FILE="${MSW_CONFIG_FILE:-$(_msw_config_home)/.config/mobileserverswitch/config.json}"
+
+# --- Config reader --------------------------------------------------------------
+# msw_cfg <dotpath> <default> — read a dotted jq path from the config file.
+# Missing file / missing jq / missing key / null -> print <default>.
+msw_cfg() {
+    local dotpath=$1 default=$2 val
+    command -v jq >/dev/null 2>&1 || { printf '%s\n' "$default"; return; }
+    [ -r "$MSW_CONFIG_FILE" ] || { printf '%s\n' "$default"; return; }
+    val=$(jq -r ".${dotpath} // empty" "$MSW_CONFIG_FILE" 2>/dev/null)
+    if [ -n "$val" ]; then printf '%s\n' "$val"; else printf '%s\n' "$default"; fi
+}
+
+# cfg_or_detect <dotpath> <detect-fn> — config value wins unless it is empty
+# or the literal string "auto"; otherwise falls through to <detect-fn>.
+cfg_or_detect() {
+    local dotpath=$1 detect_fn=$2 val
+    val=$(msw_cfg "$dotpath" "auto")
+    if [ -z "$val" ] || [ "$val" = "auto" ]; then
+        "$detect_fn"
+    else
+        printf '%s\n' "$val"
+    fi
+}
+
+# --- Auto-detection --------------------------------------------------------------
+# detect_lan_ifaces — space-separated, de-duplicated interfaces with a
+# default route (the "LAN-facing" NICs: wired and/or WiFi uplinks).
+detect_lan_ifaces() {
+    ip -o route show default 2>/dev/null \
+        | awk '{for (i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' \
+        | awk '!seen[$0]++' \
+        | tr '\n' ' ' \
+        | sed 's/ *$//'
+}
+
+# detect_tailnet_ip4 — this host's Tailscale IPv4 address, empty if
+# tailscale is absent/down/not logged in.
+detect_tailnet_ip4() {
+    tailscale ip -4 2>/dev/null | head -1
+}
+
+# has_tailscale — 0 (true) if the tailscale binary is present AND the
+# tailscale0 network device exists (interface up, not just installed).
+has_tailscale() {
+    command -v tailscale >/dev/null 2>&1 && [ -e /sys/class/net/tailscale0 ]
+}
+
+# detect_firewall_zone — firewalld's default zone; empty if firewalld is
+# absent/inactive.
+detect_firewall_zone() {
+    firewall-cmd --get-default-zone 2>/dev/null
+}
+
+# detect_wol_nic — first *wired* interface (no .../wireless sysfs node)
+# among detect_lan_ifaces; empty if only wireless default-route ifaces exist.
+detect_wol_nic() {
+    local ifc
+    for ifc in $(detect_lan_ifaces); do
+        if [ ! -e "/sys/class/net/$ifc/wireless" ]; then
+            printf '%s\n' "$ifc"
+            return
+        fi
+    done
+}
