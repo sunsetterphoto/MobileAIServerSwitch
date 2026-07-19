@@ -29,6 +29,11 @@ ColumnLayout {
     readonly property var vncState: (r.vnc) || ({})
     readonly property var wolState: (r.wol) || ({})
 
+    // No tailnet ip -> Tailscale isn't set up / reachable; hide the whole
+    // Tailnet section (StatusRow + copyable IP field below).
+    readonly property bool tailscaleAvailable: remoteAccessTab.tailscaleState.active === true
+        && !!remoteAccessTab.tailscaleState.ip4 && remoteAccessTab.tailscaleState.ip4 !== "?"
+
     // Reusable status dot: green = active, dimmed = inactive/off.
     component StatusDot: Rectangle {
         property bool on: false
@@ -69,7 +74,16 @@ ColumnLayout {
     }
 
     // Sunshine row: on/off switch like the WoL row (instead of StatusRow), so
-    // a button fits on the right. The service always exists -- no installed flag.
+    // a button fits on the right. Sunshine is an optional generic remote
+    // method (not tied to any particular GPU) -- but unlike rdp/vnc,
+    // msw-status doesn't emit an `installed` flag for it (only
+    // active/exposure, both derived from whether port 47989 is currently
+    // listening). There is therefore no way to distinguish "not installed"
+    // from "installed but stopped" from ctrl.status alone, so this row
+    // can't be graceful-degradation-hidden the same way RDP is without a
+    // CLI-side change (out of scope here -- QML-only task). Left always
+    // visible; only the "(dGPU awake)" wording assumption was removed (see
+    // ModeTab.qml).
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
@@ -141,9 +155,10 @@ ColumnLayout {
                 : (remoteAccessTab.vncState.active ? "running · :5900" : "installed, off")
     }
 
-    Kirigami.Separator { Layout.fillWidth: true }
+    Kirigami.Separator { Layout.fillWidth: true; visible: remoteAccessTab.tailscaleAvailable }
 
     StatusRow {
+        visible: remoteAccessTab.tailscaleAvailable
         on: remoteAccessTab.tailscaleState.active === true
         label: "Tailnet"
         detail: ""
@@ -153,6 +168,7 @@ ColumnLayout {
     // selected/copied without looking like an editable field (flat/
     // transparent background, normal text color).
     PlasmaComponents3.TextField {
+        visible: remoteAccessTab.tailscaleAvailable
         Layout.fillWidth: true
         readOnly: true
         selectByMouse: true
