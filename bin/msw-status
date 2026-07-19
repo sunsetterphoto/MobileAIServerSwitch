@@ -184,24 +184,38 @@ RDP_ACTIVE=$(svc_active_user app-org.kde.krdpserver.service)
 VNC_INST=$( (command -v krfb >/dev/null 2>&1 || command -v wayvnc >/dev/null 2>&1) && echo true || echo false)
 VNC_ACTIVE=$(port_active 5900)
 
-# --- Services array ------------------------------------------------------------
-# TODO(task3): build this from config.services instead of the hardcoded list below.
-# Format per entry: id label scope unit port
-svc_row() {  # $1 id  $2 label  $3 scope(user|system)  $4 unit  $5 port
-    local active; [ "$3" = system ] && active=$(svc_active_system "$4") || active=$(svc_active_user "$4")
-    jq -n --arg id "$1" --arg label "$2" --arg scope "$3" \
-          --argjson active "$active" --argjson port "$5" \
-          --arg exposure "$(exposure_for_port "$5")" \
-          '{id:$id,label:$label,scope:$scope,active:$active,port:$port,exposure:$exposure}'
+# --- Services array (config-driven) --------------------------------------------
+# Built entirely from config.services (~/.config/mobileserverswitch/config.json);
+# no service is hardcoded here. Missing config / missing `services` key / empty
+# array -> services: []. Each config entry: {id,label,unit,scope,port}; `scope`
+# selects systemctl --user vs system-wide `is-active`. `unit` is echoed back so
+# the plasmoid never has to guess/hardcode it (see ServicesTab.qml).
+svc_row() {  # $1 id  $2 label  $3 unit  $4 scope(user|system)  $5 port
+    local active
+    [ "$4" = system ] && active=$(svc_active_system "$3") || active=$(svc_active_user "$3")
+    jq -n --arg id "$1" --arg label "$2" --arg unit "$3" --arg scope "$4" \
+          --argjson active "$active" --argjson port "${5:-0}" \
+          --arg exposure "$(exposure_for_port "${5:-0}")" \
+          '{id:$id,label:$label,unit:$unit,scope:$scope,active:$active,port:$port,exposure:$exposure}'
 }
-SERVICES=$(jq -s '.' <<EOF
-$(svc_row sunshine   Sunshine   user   app-dev.lizardbyte.app.Sunshine.service 47989)
-$(svc_row comfyui    ComfyUI    user   comfyui.service     8188)
-$(svc_row speaches   Speaches   user   speaches.service    8000)
-$(svc_row chatterbox Chatterbox user   chatterbox.service  8004)
-$(svc_row ollama     Ollama     system ollama.service      11434)
-EOF
-)
+SERVICES_ROWS=""
+if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
+    CONFIG_SERVICES=$(jq -c '.services // [] | .[]' "$MSW_CONFIG_FILE" 2>/dev/null)
+    if [ -n "$CONFIG_SERVICES" ]; then
+        while IFS= read -r svc; do
+            [ -z "$svc" ] && continue
+            id=$(jq -r '.id // empty' <<<"$svc")
+            label=$(jq -r '.label // .id // "?"' <<<"$svc")
+            unit=$(jq -r '.unit // empty' <<<"$svc")
+            scope=$(jq -r '.scope // "user"' <<<"$svc")
+            port=$(jq -r '.port // 0' <<<"$svc")
+            [ -z "$unit" ] && continue   # malformed entry (no unit) -> skip
+            SERVICES_ROWS+=$(svc_row "$id" "$label" "$unit" "$scope" "$port")
+            SERVICES_ROWS+=$'\n'
+        done <<< "$CONFIG_SERVICES"
+    fi
+fi
+SERVICES=$(jq -s '.' <<< "$SERVICES_ROWS")
 
 # --- Assemble ------------------------------------------------------------------
 jq -n \
