@@ -17,6 +17,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$REPO_ROOT/system/systemd-user/$UNIT.d/override.conf.template"
 DEST_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT.d"
 DEST="$DEST_DIR/override.conf"
+# shellcheck source=./msw-config
+. "$REPO_ROOT/bin/msw-config"
 
 if [ $# -ne 1 ] || [ -z "${1:-}" ]; then
     echo "Usage: $(basename "$0") <RDP-PASSWORD>" >&2
@@ -33,13 +35,28 @@ if ! command -v krdpserver >/dev/null 2>&1; then
     exit 1
 fi
 
+# Fail closed: RDP must bind exclusively to the Tailnet. If no Tailnet IPv4
+# address can be detected (tailscale absent/down/not logged in), refuse to
+# write a live override at all rather than falling back to a wider bind.
+TAILNET_IP=$(detect_tailnet_ip4)
+if [ -z "$TAILNET_IP" ]; then
+    echo "No Tailscale IPv4 address detected -- refusing to set up RDP" >&2
+    echo "(RDP must bind to the Tailnet only; see docs/KRDP.md). Ensure" >&2
+    echo "tailscale is installed, running and logged in, then retry." >&2
+    exit 1
+fi
+
 mkdir -p "$DEST_DIR"
-# Password substitution via environment variable + awk (no sed-escaping
-# problems with special characters in the password; awk reads the value from
-# ENVIRON, never from the script text -> nothing ends up in shell
-# history/process list except the invocation itself).
+# Substitution via environment variables + awk (no sed-escaping problems
+# with special characters in the password; awk reads values from ENVIRON,
+# never from the script text -> nothing ends up in shell history/process
+# list except the invocation itself).
 umask 077
-PW="$PW" awk '{ gsub(/__RDP_PASSWORD__/, ENVIRON["PW"]); print }' "$TEMPLATE" > "$DEST"
+PW="$PW" IP="$TAILNET_IP" awk '{
+    gsub(/__RDP_PASSWORD__/, ENVIRON["PW"]);
+    gsub(/__TAILNET_IP__/, ENVIRON["IP"]);
+    print
+}' "$TEMPLATE" > "$DEST"
 chmod 600 "$DEST"
 
 echo "Written: $DEST (mode $(stat -c '%a' "$DEST"))"
