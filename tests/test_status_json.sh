@@ -123,7 +123,7 @@ fi
     ss() { printf '%s' "$STUB"; }     # exposure_for_port only reads column 4
     exposure_of() { STUB=$(printf 'LISTEN 0 128 %s *:*\n' $1); exposure_for_port 3389; }
 
-    assert_eq "$(exposure_of '100.75.62.108:3389')"      "Tailnet"   "IPv4 CGNAT address = Tailnet"
+    assert_eq "$(exposure_of '100.64.0.1:3389')"      "Tailnet"   "IPv4 CGNAT address = Tailnet"
     # Regression: a Tailscale IPv6 (ULA fd7a:115c:a1e0::/48) used to fall through
     # to the default branch and was reported as LAN -- i.e. "reachable from the
     # LAN" for a socket that is bound to the tailnet only.
