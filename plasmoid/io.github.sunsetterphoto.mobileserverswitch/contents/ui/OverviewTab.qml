@@ -8,11 +8,12 @@
  * ctrl.perfCmd/powerCmd/runAndRefresh/switchMode here.
  *
  * Sections are clickable and jump to the corresponding detail tab via the
- * navigate(index) signal. This file doesn't see `tabs` from main.qml (no
+ * navigate(key) signal. This file doesn't see `tabs` from main.qml (no
  * global scope between separate .qml files) -- so it does NOT touch
  * tabs.currentIndex directly, but passes the signal upward instead. main.qml
- * wires it up as:
- *   OverviewTab { ctrl: root; onNavigate: (i) => tabs.currentIndex = i }
+ * resolves the key against the (filtered) visible tab list and wires it up
+ * as:
+ *   OverviewTab { ctrl: root; onNavigate: (key) => { ... } }
  *
  * All data comes via ctrl.* (property var ctrl = root from main.qml),
  * including local fallbacks following the same pattern as PerformanceTab/
@@ -31,8 +32,11 @@ ColumnLayout {
     // Reference to the root PlasmoidItem from main.qml.
     property var ctrl
 
-    // Jump into a detail tab (main.qml sets tabs.currentIndex accordingly).
-    signal navigate(int index)
+    // Jump into a detail tab, identified by its `key` (see allTabsData in
+    // main.qml). A key, not an index: the index would be a position in the
+    // *filtered* tab list, so hiding any tab would silently retarget every
+    // click below it.
+    signal navigate(string key)
 
     spacing: Kirigami.Units.smallSpacing
 
@@ -90,7 +94,7 @@ ColumnLayout {
         }
     }
 
-    // --- Mode (jumps to Mode tab, index 2) -----------------------------------
+    // --- Mode (jumps to Mode tab) ---------------------------------------------
     Item {
         Layout.fillWidth: true
         implicitHeight: modeRow.implicitHeight
@@ -99,7 +103,7 @@ ColumnLayout {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: overviewTab.navigate(2)
+            onClicked: overviewTab.navigate("mode")
         }
 
         RowLayout {
@@ -130,7 +134,7 @@ ColumnLayout {
 
     Kirigami.Separator { Layout.fillWidth: true }
 
-    // --- Performance + dGPU (jumps to Performance tab, index 1) --------------
+    // --- Performance + dGPU (jumps to Performance tab) -----------------------
     Item {
         Layout.fillWidth: true
         implicitHeight: perfGrid.implicitHeight
@@ -139,7 +143,7 @@ ColumnLayout {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: overviewTab.navigate(1)
+            onClicked: overviewTab.navigate("performance")
         }
 
         GridLayout {
@@ -174,7 +178,7 @@ ColumnLayout {
     Kirigami.Separator { Layout.fillWidth: true }
 
     // --- Remote access: SSH/Sunshine status, Tailnet IP, WoL status ---------
-    // (jumps to Remote Access tab, index 3)
+    // (jumps to Remote Access tab)
     Item {
         Layout.fillWidth: true
         implicitHeight: remoteCol.implicitHeight
@@ -183,7 +187,7 @@ ColumnLayout {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: overviewTab.navigate(3)
+            onClicked: overviewTab.navigate("remote")
         }
 
         ColumnLayout {
@@ -222,7 +226,7 @@ ColumnLayout {
 
     Kirigami.Separator { Layout.fillWidth: true }
 
-    // --- Services (jumps to Services tab, index 4) ----------------------------
+    // --- Services (jumps to Services tab) -------------------------------------
     Item {
         Layout.fillWidth: true
         implicitHeight: servicesRow.implicitHeight
@@ -231,7 +235,7 @@ ColumnLayout {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: overviewTab.navigate(4)
+            onClicked: overviewTab.navigate("services")
         }
 
         RowLayout {

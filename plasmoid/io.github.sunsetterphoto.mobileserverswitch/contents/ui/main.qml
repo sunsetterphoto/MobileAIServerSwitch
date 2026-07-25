@@ -368,7 +368,8 @@ PlasmoidItem {
     // -- separate .qml files don't otherwise see `root`/`exec` (no global
     // scope). OverviewTab also can't see `tabs` (lives here in the
     // fullRepresentation scope), so it passes clicks up through the
-    // navigate(index) signal instead.
+    // navigate(key) signal instead, resolved against visibleTabs below via
+    // indexOfTab().
     //
     // Visible tabs are config-driven (General settings page's "Visible tabs"
     // checkboxes -> Plasmoid.configuration.show<Key>, default true -- see
@@ -424,10 +425,32 @@ PlasmoidItem {
             return null;
         }
 
+        // Resolves a navigation key (from OverviewTab's navigate signal)
+        // against the *visible* tabs, so a hidden tab can never misdirect a
+        // click onto whatever happens to sit at that position. Looks the key
+        // up by value rather than hard-coding the current key set, so future
+        // tabs need no changes here. Returns -1 if the key isn't visible
+        // (e.g. its own tab is hidden) -- the caller must treat that as "do
+        // nothing", not as index 0.
+        function indexOfTab(key) {
+            for (var i = 0; i < visibleTabs.length; i++)
+                if (visibleTabs[i].key === key) return i;
+            return -1;
+        }
+
         // One Component per tab, each with `ctrl: root` set inline (so the
         // Loader below never needs an onLoaded/item.ctrl-assignment step --
         // the property is already bound at instantiation time).
-        Component { id: overviewComp; OverviewTab { ctrl: root; onNavigate: (i) => tabs.currentIndex = i } }
+        Component {
+            id: overviewComp
+            OverviewTab {
+                ctrl: root
+                onNavigate: (key) => {
+                    var i = fullRep.indexOfTab(key);
+                    if (i >= 0) tabs.currentIndex = i;
+                }
+            }
+        }
         Component { id: performanceComp; PerformanceTab { ctrl: root } }
         Component { id: modeComp; ModeTab { ctrl: root } }
         Component { id: remoteComp; RemoteAccessTab { ctrl: root } }
