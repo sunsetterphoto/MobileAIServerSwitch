@@ -12,8 +12,22 @@
  * overrule someone else's edit. The freshness check right before writing
  * (save()'s ctrl.notesMtime() call below) is the actual guard; the mtime it
  * compares against (loadedMtime) is adopted ONLY from msw-notes' own output
- * (load()'s read, or write's printed mtime on success) -- never from a
- * second, separate round trip that could itself race an external writer.
+ * (load()'s single `read` invocation -- which prints the mtime it read on
+ * stderr, immediately before printing the content, as part of that SAME
+ * call -- or write's printed mtime on success) -- never from a second,
+ * separate round trip that could itself race an external writer.
+ *
+ * A file that EXISTS but could not be read (permissions -- most realistically
+ * after a `sudo $EDITOR` over SSH leaves it root-owned -- or a directory
+ * sitting at the notes path) is reported by msw-notes as a distinct failure,
+ * never as empty. load() turns that into loadFailed: the pad is shown
+ * disabled with an explanation instead of an empty, editable textarea, and
+ * save() refuses to run at all while loadFailed is set -- regardless of how
+ * dirty became true or which caller (debounce, popup close, the Save
+ * button) invoked it. Presenting an empty pad for an unreadable file would
+ * let the very next autosave silently destroy content that is still on
+ * disk, since `mv -f` in msw-notes write only needs directory write
+ * permission, never permission to read the file it replaces.
  */
 import QtQuick
 import QtQuick.Layouts
@@ -29,6 +43,12 @@ ColumnLayout {
     property bool dirty: false
     property bool conflict: false
     property bool saveError: false
+    // Set when the most recent load() could not read the file at all (exit
+    // code != 0 from `msw-notes read`: permission denied, or a directory at
+    // the notes path). While true: the textarea is disabled (never an
+    // editable-looking empty pad standing in for content that may still be
+    // on disk), and save() refuses unconditionally -- see save() below.
+    property bool loadFailed: false
     // Set right before load() assigns area.text, consumed by the very next
     // TextArea.onTextChanged -- suppresses ONLY that one programmatic
     // assignment, not "every change for a while" (a stuck window-style flag
@@ -38,7 +58,22 @@ ColumnLayout {
     property bool suppressNextChange: false
 
     function load() {
-        ctrl.notesLoad(function(text, code) {
+        ctrl.notesLoad(function(text, code, mtime) {
+            if (code !== 0) {
+                // Do NOT touch area.text here: leaving whatever was already
+                // shown (typically nothing, on the very first load) is
+                // strictly safer than assigning "", which would look
+                // exactly like a genuinely empty file. Either way the pad
+                // is about to be disabled below, so nothing further can be
+                // typed into it regardless.
+                notesTab.loadFailed = true;
+                notesTab.dirty = false;
+                notesTab.conflict = false;
+                notesTab.saveError = false;
+                debounce.stop(); // no pending autosave may survive a failed (re)load
+                return;
+            }
+            notesTab.loadFailed = false;
             notesTab.suppressNextChange = true;
             area.text = text;
             // QML's TextEdit/TextArea "text" property notifies synchronously
@@ -52,9 +87,12 @@ ColumnLayout {
             notesTab.dirty = false;
             notesTab.conflict = false;
             notesTab.saveError = false;
-            ctrl.notesMtime(function(m) {
-                notesTab.loadedMtime = m;
-            });
+            // Adopted from THIS SAME `read` invocation's stderr (see
+            // ctrl.notesLoad in main.qml) -- not a second, separate `mtime`
+            // call, which would reopen the exact race this tab exists to
+            // close (an external writer landing in the gap getting silently
+            // adopted as "the mtime we loaded at").
+            notesTab.loadedMtime = mtime;
         });
     }
 
@@ -62,6 +100,13 @@ ColumnLayout {
     // button in the conflict banner -- nothing else passes true, see the
     // "Save" button below).
     function save(force) {
+        // Never write over a file this tab could not even read -- true
+        // regardless of force, and regardless of which caller triggered
+        // save() (debounce timer, popup close, the Save/Save-anyway
+        // buttons): none of them can observe dirty becoming true while the
+        // pad is disabled, but this guard does not rely on that being the
+        // only way in -- it is the actual, unconditional stop.
+        if (notesTab.loadFailed) return;
         if (!notesTab.dirty && !force) return;
         ctrl.notesMtime(function(m) {
             if (!force && m > notesTab.loadedMtime) {
@@ -108,6 +153,33 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
+        visible: notesTab.loadFailed
+        spacing: Kirigami.Units.smallSpacing
+
+        Kirigami.Icon {
+            source: "dialog-error"
+            Layout.preferredWidth: Kirigami.Units.iconSizes.small
+            Layout.preferredHeight: Kirigami.Units.iconSizes.small
+        }
+        PlasmaComponents3.Label {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            font: Kirigami.Theme.smallFont
+            // The two realistic causes, named directly: permission denied
+            // (most often a `sudo $EDITOR` over SSH leaving the file
+            // root-owned) and a directory sitting at the notes path.
+            // Nothing is saved while this shows -- see save()'s loadFailed
+            // guard above.
+            text: "Notes could not be read (permission denied, or the notes path is a directory). Nothing will be saved until this is fixed."
+        }
+        PlasmaComponents3.Button {
+            text: "Retry"
+            onClicked: notesTab.load()
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
         visible: notesTab.conflict
         spacing: Kirigami.Units.smallSpacing
 
@@ -143,8 +215,9 @@ ColumnLayout {
 
         PlasmaComponents3.TextArea {
             id: area
+            enabled: !notesTab.loadFailed
             wrapMode: TextEdit.Wrap
-            placeholderText: "Notes about this machine — ports, commands, anything worth keeping."
+            placeholderText: notesTab.loadFailed ? "" : "Notes about this machine — ports, commands, anything worth keeping."
             onTextChanged: {
                 if (notesTab.suppressNextChange) {
                     notesTab.suppressNextChange = false;
@@ -164,7 +237,8 @@ ColumnLayout {
             opacity: 0.6
             font: Kirigami.Theme.smallFont
             color: notesTab.saveError ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
-            text: notesTab.saveError ? "save failed -- click Save to retry"
+            text: notesTab.loadFailed ? "notes unreadable -- see above"
+                  : notesTab.saveError ? "save failed -- click Save to retry"
                   : (notesTab.dirty ? "unsaved changes" : "saved")
         }
         PlasmaComponents3.Button {
@@ -175,8 +249,11 @@ ColumnLayout {
             // already showing: the banner's own two buttons (Reload / Save
             // anyway) are the only way to resolve it, so this button staying
             // enabled there would just be a confusing, silent no-op click.
+            // Also disabled while loadFailed -- the Retry button in that
+            // banner is the only way forward, and save() would refuse
+            // anyway (belt and suspenders, not the only guard).
             text: "Save"
-            enabled: (notesTab.dirty || notesTab.saveError) && !notesTab.conflict
+            enabled: (notesTab.dirty || notesTab.saveError) && !notesTab.conflict && !notesTab.loadFailed
             onClicked: notesTab.save(false)
         }
     }
