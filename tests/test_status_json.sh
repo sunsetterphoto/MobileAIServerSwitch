@@ -204,8 +204,9 @@ assert "jq -e '[.network.interfaces[] | select(.is_default)] | length <= 1' >/de
 # mismatch. That made the check structurally blind to "should be down,
 # reported up" -- precisely the virbr0 overcorrection the up-formula fix is
 # supposed to guard against. Compare directly instead; a name missing from the
-# $expected map is not a real case (both snapshots come from the same `ip -j
-# addr` universe) and is treated as a loud failure, not silently swallowed.
+# $expected map is not a real case for the fabricated single-snapshot cases
+# below (both sides come from the same synthetic input) and is treated as a
+# loud failure there, not silently swallowed.
 NET_UP_FILTER='
     ($ip | map({key: .ifname, value: (.operstate == "UP" or ((.flags // []) | index("LOWER_UP") != null))}) | from_entries) as $expected
     | [ $net[] | . as $iface
@@ -217,11 +218,50 @@ NET_UP_FILTER='
       ]
     | length'
 
-IP_ADDR_JSON=$(ip -j addr 2>/dev/null)
-[ -z "$IP_ADDR_JSON" ] && IP_ADDR_JSON="[]"
-NET_UP_MISMATCHES=$(jq -n --argjson net "$(jq -c '.network.interfaces' <<<"$J")" --argjson ip "$IP_ADDR_JSON" "$NET_UP_FILTER")
+# The live check cannot reuse a single `ip -j addr` snapshot taken separately
+# from the `msw-status --json` call: `up` is a live kernel property, and on a
+# real host it can legitimately change *during* the gap between the two reads
+# (e.g. test_power.sh, which runs immediately before this file in the suite,
+# toggles wifi off/on -- wlp9s0 then needs a couple of seconds to reassociate
+# and come back up). Comparing msw-status's answer against a snapshot read
+# before or after it is therefore racy: a perfectly correct implementation can
+# disagree with a stale read through no fault of its own. Reproduced directly:
+# immediately after `wifi on`, `ip -j addr` and msw-status both agree
+# up=false; two seconds later both agree up=true -- the disagreement is
+# entirely a timing artifact between two observations, not a formula bug.
+#
+# Fix: bracket the msw-status call with an `ip -j addr` read BEFORE and AFTER
+# it, and assert only on interfaces whose independently computed `up` is
+# IDENTICAL in both reads -- those provably did not change state during the
+# window, so any disagreement with msw-status's answer for them is a real
+# formula bug, not a race. Interfaces that changed (or appeared/disappeared)
+# between the two reads are skipped rather than asserted on; the checked/
+# skipped counts are always printed so a permanently-flapping interface can
+# never silently empty this check without it being visible in the test log.
+IP_BEFORE=$(ip -j addr 2>/dev/null); [ -z "$IP_BEFORE" ] && IP_BEFORE="[]"
+J_NET=$(bin/msw-status --json)
+IP_AFTER=$(ip -j addr 2>/dev/null); [ -z "$IP_AFTER" ] && IP_AFTER="[]"
+
+NET_UP_RESULT=$(jq -n \
+    --argjson net "$(jq -c '.network.interfaces' <<<"$J_NET")" \
+    --argjson before "$IP_BEFORE" --argjson after "$IP_AFTER" '
+    def expected_of($snap): $snap | map({key: .ifname, value: (.operstate == "UP" or ((.flags // []) | index("LOWER_UP") != null))}) | from_entries;
+    (expected_of($before)) as $eb
+    | (expected_of($after))  as $ea
+    | reduce $net[] as $iface ({checked:0, skipped:0, mismatches:[]};
+        ($eb[$iface.name]) as $b
+        | ($ea[$iface.name]) as $a
+        | if ($b == null or $a == null or $b != $a)
+          then .skipped += 1
+          else (.checked += 1
+                | if $iface.up != $b then .mismatches += [$iface.name] else . end)
+          end)')
+NET_UP_CHECKED=$(jq -r '.checked' <<<"$NET_UP_RESULT")
+NET_UP_SKIPPED=$(jq -r '.skipped' <<<"$NET_UP_RESULT")
+NET_UP_MISMATCHES=$(jq -r '.mismatches | length' <<<"$NET_UP_RESULT")
+echo "  (network.interfaces[].up: checked $NET_UP_CHECKED stable interface(s) across the pre/post read, skipped $NET_UP_SKIPPED unstable)"
 assert "[ \"$NET_UP_MISMATCHES\" = 0 ]" \
-       "every interface's up matches operstate==UP or LOWER_UP in flags, recomputed independently (mismatches: $NET_UP_MISMATCHES)"
+       "every stable interface's up matches operstate==UP or LOWER_UP in flags (checked=$NET_UP_CHECKED skipped=$NET_UP_SKIPPED mismatches=$NET_UP_MISMATCHES)"
 
 # Prove the check above is actually load-bearing in BOTH directions, using
 # fabricated snapshots so this does not depend on today's host happening to
