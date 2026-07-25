@@ -29,6 +29,9 @@
     <entry name="showFirewall" type="Bool">
       <default>true</default>
     </entry>
+    <entry name="showNotes" type="Bool">
+      <default>true</default>
+    </entry>
   </group>
 
   <group name="Network">
