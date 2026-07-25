@@ -142,4 +142,25 @@ fi
     assert_eq "$(exposure_for_port 3389)"                ""          "nothing listening = empty"
 ) || exit 1
 
+# --- network section ----------------------------------------------------------
+assert "jq -e '.network' >/dev/null <<<\"\$J\""                          "has .network"
+assert "jq -e '.network.hostname | type == \"string\"' >/dev/null <<<\"\$J\"" "network.hostname is a string"
+assert "jq -e '.network.dns | type == \"array\"' >/dev/null <<<\"\$J\""       "network.dns is an array"
+assert "jq -e '.network.interfaces | type == \"array\"' >/dev/null <<<\"\$J\"" "network.interfaces is an array"
+assert "jq -e '.network | has(\"default\")' >/dev/null <<<\"\$J\""            "network.default present (may be null)"
+# default is either null or carries an interface name
+assert "jq -e '.network.default == null or (.network.default.iface | type == \"string\")' >/dev/null <<<\"\$J\"" \
+       "network.default is null or has an iface"
+# every interface entry is fully shaped
+assert "jq -e '.network.interfaces | all(has(\"name\") and has(\"kind\") and has(\"up\") and has(\"ip4\") and has(\"ip6\") and has(\"is_default\"))' >/dev/null <<<\"\$J\"" \
+       "every interface has the full key set"
+assert "jq -e '.network.interfaces | all(.kind | IN(\"ether\",\"wifi\",\"tailnet\",\"virtual\",\"other\"))' >/dev/null <<<\"\$J\"" \
+       "every interface kind is from the allowed set"
+assert "jq -e '.network.interfaces | all(.ip4 | type == \"array\")' >/dev/null <<<\"\$J\"" "ip4 is always an array"
+assert "jq -e '.network.interfaces | map(select(.name == \"lo\")) | length == 0' >/dev/null <<<\"\$J\"" \
+       "loopback is excluded"
+# exactly one interface may be flagged as the default route
+assert "jq -e '[.network.interfaces[] | select(.is_default)] | length <= 1' >/dev/null <<<\"\$J\"" \
+       "at most one interface is flagged default"
+
 pass

@@ -148,6 +148,68 @@ BT=$(rfkill list bluetooth 2>/dev/null | grep -q "Soft blocked: yes" && echo off
 # --- Wake-on-LAN -----------------------------------------------------------
 WOL=$(wol_json "$WOL_NIC")
 
+# --- Network: interfaces, default route, DNS ----------------------------------
+# `ip -j` emits real JSON (iproute2 >= 5), so this is a jq transform rather
+# than line parsing. Every branch degrades to empty/null instead of failing:
+# a missing `ip` must not break the status output.
+NET_HOST=$(hostname 2>/dev/null); [ -z "$NET_HOST" ] && NET_HOST="?"
+
+NET_ADDR_RAW=$(ip -j addr 2>/dev/null)
+[ -z "$NET_ADDR_RAW" ] && NET_ADDR_RAW="[]"
+NET_ROUTE_RAW=$(ip -j route show default 2>/dev/null)
+[ -z "$NET_ROUTE_RAW" ] && NET_ROUTE_RAW="[]"
+
+# The default route: LOWEST metric wins. This machine has two (ethernet at
+# metric 100, wifi at 600) -- taking the first entry would be a coin flip.
+NET_DEFAULT=$(jq -c '
+    map(select(.dst == "default"))
+    | sort_by(.metric // 0)
+    | if length == 0 then null
+      else { iface: .[0].dev, gateway: (.[0].gateway // null), ip4: (.[0].prefsrc // null) }
+      end' <<<"$NET_ROUTE_RAW" 2>/dev/null)
+[ -z "$NET_DEFAULT" ] && NET_DEFAULT=null
+
+NET_DEFAULT_IFACE=$(jq -r 'if . == null then "" else (.iface // "") end' <<<"$NET_DEFAULT" 2>/dev/null)
+
+NET_IFACES=$(jq -c --arg def "$NET_DEFAULT_IFACE" '
+    map(select(.ifname != "lo"))
+    | map({
+        name: .ifname,
+        kind: (
+          if   (.ifname | startswith("tailscale")) then "tailnet"
+          elif (.ifname | test("^(virbr|docker|podman|cni-|veth|br-)")) then "virtual"
+          elif (.ifname | test("^wl")) then "wifi"
+          elif (.link_type == "ether") then "ether"
+          else "other" end),
+        up: (.operstate == "UP"),
+        mac: (.address // null),
+        ip4: [ (.addr_info // [])[] | select(.family == "inet" and (.scope // "") != "host")
+               | "\(.local)/\(.prefixlen)" ],
+        ip6: [ (.addr_info // [])[] | select(.family == "inet6" and (.scope // "") == "global")
+               | "\(.local)/\(.prefixlen)" ],
+        is_default: (.ifname == $def)
+      })' <<<"$NET_ADDR_RAW" 2>/dev/null)
+[ -z "$NET_IFACES" ] && NET_IFACES="[]"
+
+# DNS: resolvectl is per-link and line based; empty links are dropped and
+# addresses deduplicated. Falls back to resolv.conf, then to an empty list.
+net_dns() {
+    local out=""
+    if command -v resolvectl >/dev/null 2>&1; then
+        out=$(resolvectl dns 2>/dev/null | sed 's/^[^:]*: *//' | tr ' ' '\n')
+    fi
+    if [ -z "$(tr -d '[:space:]' <<<"${out:-}")" ] && [ -r /etc/resolv.conf ]; then
+        out=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf)
+    fi
+    printf '%s\n' "$out" | awk 'NF && !seen[$0]++'
+}
+NET_DNS=$(net_dns | jq -Rc '[inputs] // []' 2>/dev/null)
+[ -z "$NET_DNS" ] && NET_DNS="[]"
+
+NETWORK=$(jq -nc --arg hostname "$NET_HOST" --argjson default "$NET_DEFAULT" \
+                 --argjson dns "$NET_DNS" --argjson interfaces "$NET_IFACES" \
+  '{hostname:$hostname,default:$default,dns:$dns,interfaces:$interfaces}')
+
 # --- Firewall (firewalld, read-only) ------------------------------------------
 # Security note: nothing is written/changed here, only `--list-*` (unprivileged
 # readable) is evaluated. Every error branch (firewalld inactive, firewall-cmd
@@ -364,6 +426,7 @@ jq -n \
   --arg epp "$EPP" --arg aspm "$ASPM" --arg wifi "$WIFI" --arg bt "$BT" \
   --argjson services "$SERVICES" \
   --argjson firewall "$FIREWALL" \
+  --argjson network "$NETWORK" \
   '{
     mode:$mode,
     perf:{profile:$profile,max_perf_pct:$mpp,turbo:$turbo},
@@ -371,6 +434,7 @@ jq -n \
     gpu:{present:$gpu_present,awake:$gpu_awake,dstate:$gpu_dstate,watts:$gpu_watts,control:$gpu_control},
     power_extra:{epp:$epp,aspm:$aspm,wifi:$wifi,bt:$bt},
     firewall:$firewall,
+    network:$network,
     remote:{
       ssh:{active:$ssh_active,port:22,exposure:$ssh_exp},
       sunshine:{installed:$sun_inst,active:$sun_active,port:47989,exposure:$sun_exp},
