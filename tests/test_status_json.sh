@@ -94,6 +94,24 @@ assert "jq -e '.firewall.apps | has(\"myapp\")' >/dev/null <<<\"\$J2\""         
 assert "jq -e '.firewall.apps.myapp.blocked | type == \"boolean\"' >/dev/null <<<\"\$J2\"" "config-driven firewall.apps: myapp.blocked is bool"
 assert "jq -e '.firewall.apps | (has(\"rdp\") | not)' >/dev/null <<<\"\$J2\""        "config-driven firewall.apps: default rdp key gone once config defines its own apps"
 
+# --- Regression: invalid firewall_zone must not read as "firewalld down" ---
+#     network.firewall_zone is user-editable config. msw-status asks
+#     firewall-cmd --list-all for that zone in one call; if the zone name is
+#     wrong, that call fails with INVALID_ZONE even though firewalld itself
+#     is running fine. That must stay distinguishable from firewalld being
+#     absent/dead: zone stays the configured (bogus) name, not null. Only
+#     meaningful when firewalld is actually running on the test host.
+if firewall-cmd --state >/dev/null 2>&1; then
+    cat > "$CFG_FILE" <<'JSON'
+{ "network": { "firewall_zone": "no-such-zone-xyz" } }
+JSON
+    J3=$(bin/msw-status --json)
+    assert "jq -e '.firewall.zone != null' >/dev/null <<<\"\$J3\""            "invalid firewall_zone + firewalld running: .firewall.zone is not null"
+    assert "jq -e '.firewall.zone == \"no-such-zone-xyz\"' >/dev/null <<<\"\$J3\"" "invalid firewall_zone + firewalld running: .firewall.zone echoes the configured name"
+else
+    echo "  (skipping invalid-zone regression: firewalld is not running on this host)"
+fi
+
 # --- exposure_for_port: unit test against a stubbed `ss` ----------------------
 # The classification decides whether the widget claims a port is reachable from
 # the LAN, so it is tested against fabricated socket lists instead of whatever

@@ -155,17 +155,44 @@ WOL=$(wol_json "$WOL_NIC")
 # pattern as gpu/power_extra/remote).
 FW_ZONE=$(cfg_or_detect network.firewall_zone detect_firewall_zone)
 FW_ACTIVE=false
+FW_ALL=""
 if command -v firewall-cmd >/dev/null 2>&1; then
-    FW_STATE=$(firewall-cmd --state 2>/dev/null)
-    [ "$FW_STATE" = "running" ] && FW_ACTIVE=true
+    # ONE call instead of six in the common case. Each firewall-cmd
+    # invocation costs ~0.3 s (D-Bus round trip plus Python startup), and
+    # asking six times made msw-status take ~2 s. `--list-all` returns
+    # interfaces, services, ports and rich rules in a single block, which
+    # is everything read below.
+    FW_ALL=$(firewall-cmd --list-all --zone="$FW_ZONE" 2>/dev/null)
+    if [ -n "$FW_ALL" ]; then
+        FW_ACTIVE=true
+    else
+        # --list-all fails both when firewalld is not running AND when
+        # network.firewall_zone (user-editable config) names a zone that
+        # does not exist -- those are different states, and only the first
+        # one means firewalld is actually down. One extra --state call
+        # disambiguates; it only runs on this already-failed path, so the
+        # happy path stays a single call.
+        [ "$(firewall-cmd --state 2>/dev/null)" = "running" ] && FW_ACTIVE=true
+    fi
 fi
+
+# fw_field <name> -- value of one "  <name>: <value>" line from --list-all.
+# Rich rules are multi-line and handled separately below. When FW_ALL is
+# empty (firewalld active but the configured zone is invalid), every field
+# below is correctly empty too.
+fw_field() {
+    printf '%s\n' "$FW_ALL" | awk -v k="$1" '
+        $0 ~ "^[[:space:]]+" k ":" { sub("^[[:space:]]+" k ":[[:space:]]*", ""); print; exit }'
+}
 
 if [ "$FW_ACTIVE" = true ]; then
     FW_ZONE_J=$(jq -nc --arg z "$FW_ZONE" '$z')
-    FW_PORTS=$(firewall-cmd --zone="$FW_ZONE" --list-ports 2>/dev/null)
-    FW_SERVICES=$(firewall-cmd --zone="$FW_ZONE" --list-services 2>/dev/null)
-    FW_RICH=$(firewall-cmd --zone="$FW_ZONE" --list-rich-rules 2>/dev/null)
-    FW_IFACES_RAW=$(firewall-cmd --zone="$FW_ZONE" --list-interfaces 2>/dev/null)
+    FW_PORTS=$(fw_field "ports")
+    FW_SERVICES=$(fw_field "services")
+    FW_IFACES_RAW=$(fw_field "interfaces")
+    # "rich rules:" opens a block whose entries follow on their own lines
+    # until the end of the output.
+    FW_RICH=$(printf '%s\n' "$FW_ALL" | sed -n '/^[[:space:]]*rich rules:/,$p' | tail -n +2)
     FW_HIGH=$(grep -q '1025-65535/tcp' <<<"$FW_PORTS" && echo true || echo false)
     FW_SSH=$(grep -qw ssh <<<"$FW_SERVICES" && echo true || echo false)
 else
