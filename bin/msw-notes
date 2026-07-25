@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# msw-notes — read and write the user's notes file.
+#
+#   msw-notes path                    print the notes file location
+#   msw-notes read                    print the content (missing file -> empty)
+#   msw-notes mtime                   modification time in epoch seconds (missing -> 0)
+#   msw-notes write --base64 <data>   write atomically, mode 600; prints the
+#                                      new mtime (epoch seconds) on success
+#
+# The notes are user data, not machine state, which is why they are NOT part
+# of msw-status: notes about a server tend to contain credentials, and the
+# status JSON is handed around freely. A plain file also means the notes stay
+# reachable over SSH with any editor when there is no desktop session.
+#
+# write takes base64 for the same reason msw-config-write does: the plasmoid
+# hands its command line to /bin/sh, and base64's alphabet cannot break out of
+# it regardless of quotes, newlines or metacharacters in the text.
+set -uo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+# shellcheck source=./msw-config
+. "$SCRIPT_DIR/msw-config"
+
+# Tests override MSW_NOTES_FILE to avoid touching the real notes.
+NOTES_FILE="${MSW_NOTES_FILE:-$(_msw_config_home)/.config/mobileserverswitch/notes.md}"
+
+usage() { sed -n '3,8p' "$0" | sed 's/^# \?//'; }
+
+case "${1:-}" in
+    path)
+        [ $# -eq 1 ] || { echo "path takes no argument" >&2; exit 2; }
+        printf '%s\n' "$NOTES_FILE"
+        ;;
+    read)
+        [ $# -eq 1 ] || { echo "read takes no argument" >&2; exit 2; }
+        [ -r "$NOTES_FILE" ] && cat "$NOTES_FILE"
+        exit 0
+        ;;
+    mtime)
+        [ $# -eq 1 ] || { echo "mtime takes no argument" >&2; exit 2; }
+        if [ -e "$NOTES_FILE" ]; then stat -c '%Y' "$NOTES_FILE"; else echo 0; fi
+        ;;
+    write)
+        [ $# -eq 3 ] && [ "$2" = "--base64" ] || {
+            echo "Usage: msw-notes write --base64 <data>" >&2; exit 2; }
+        # Validate first, before touching anything on disk. This intentionally
+        # does NOT capture the decoded bytes into a shell variable: $(...)
+        # command substitution strips all trailing newlines (and can't hold
+        # embedded NULs at all), which would silently truncate notes ending in
+        # a blank line. The real decode below streams straight into the temp
+        # file instead of round-tripping through a variable.
+        printf '%s' "$3" | base64 -d >/dev/null 2>&1 || {
+            echo "write: argument is not valid base64" >&2; exit 2; }
+        dir=$(dirname "$NOTES_FILE")
+        mkdir -p "$dir" || { echo "write: cannot create $dir" >&2; exit 1; }
+        umask 077
+        tmp=$(mktemp "$dir/.notes.md.XXXXXX") || { echo "write: mktemp failed" >&2; exit 1; }
+        trap 'rm -f "$tmp"' EXIT
+        printf '%s' "$3" | base64 -d > "$tmp" 2>/dev/null || {
+            echo "write: decode failed" >&2; exit 1; }
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$NOTES_FILE" || { echo "write: mv failed" >&2; exit 1; }
+        trap - EXIT
+        # Print the mtime of the file we just wrote, read in THIS SAME
+        # invocation right after the rename -- not via a second, separate
+        # `msw-notes mtime` call. A second call would leave a window (an
+        # async round trip through the caller's process/event-loop, easily
+        # milliseconds or more) in which an external writer could land and
+        # get silently adopted as "the mtime of our own write". Reading it
+        # here still cannot close the window to absolute zero (something
+        # could in principle land between the mv and this stat), but shrinks
+        # it from "one external round trip" to one stat(2) call.
+        stat -c '%Y' "$NOTES_FILE"
+        ;;
+    "")
+        usage >&2
+        exit 2
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        echo "Unknown: $1" >&2; exit 2 ;;
+esac

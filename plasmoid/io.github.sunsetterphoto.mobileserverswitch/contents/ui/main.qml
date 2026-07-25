@@ -1,5 +1,5 @@
 /*
- * Mobile Server Switch — plasmoid for switching between server and laptop
+ * Mobile AI Server Switch — plasmoid for switching between server and laptop
  * operation, plus a status/control center for performance, power, remote
  * access, services and firewall.
  *
@@ -60,6 +60,7 @@ PlasmoidItem {
     readonly property string perfTool: "msw-perf"
     readonly property string powerTool: "msw-power"
     readonly property string firewallTool: "msw-firewall"
+    readonly property string notesTool: "msw-notes"
 
     // --- State, read from msw-status --json ----------------------------------
     property var status: ({})          // last successfully parsed overall object
@@ -99,7 +100,7 @@ PlasmoidItem {
     }
 
     Plasmoid.icon: modeIcon(mode)
-    toolTipMainText: "Mobile Server Switch: " + modeLabel(mode)
+    toolTipMainText: "Mobile AI Server Switch: " + modeLabel(mode)
     // Compact tooltip = the "at a glance" area in the panel (hover, no click).
     // Summarizes the most important bits from msw-status; every access to
     // status.* is guarded against the pre-poll state ({}).
@@ -139,6 +140,8 @@ PlasmoidItem {
         connectedSources: []
         // Callbacks per source command; disconnected again after the reply.
         property var callbacks: ({})
+        // Disambiguates concurrent calls (see run() below).
+        property int seq: 0
 
         onNewData: (source, data) => {
             var cb = callbacks[source];
@@ -148,8 +151,20 @@ PlasmoidItem {
             }
             disconnectSource(source);
         }
+        // The engine keys/deduplicates sources by their literal command
+        // string, and callbacks[] above does the same -- so two concurrent
+        // run() calls for the SAME argument-less command (e.g. "msw-notes
+        // mtime", issued from more than one place in NotesTab.qml within a
+        // short window) would collide: the second connectSource() call
+        // overwrites the first callback before its reply arrives, and the
+        // engine drops the duplicate source. Appending a trailing shell
+        // comment with an incrementing counter makes every invocation's
+        // source string unique -- it changes nothing about what actually
+        // runs (a "# N" comment is inert to /bin/sh) -- so no two in-flight
+        // calls can ever collide, no matter how many callers overlap.
         function run(cmd, cb) {
-            var full = root.pathPrefix + cmd;
+            exec.seq++;
+            var full = root.pathPrefix + cmd + "  # " + exec.seq;
             if (cb)
                 callbacks[full] = cb;
             connectSource(full);
@@ -205,6 +220,30 @@ PlasmoidItem {
         exec.run(cmd, function(){ refresh(); });
     }
 
+    // Notes are user data, not machine state: they are deliberately NOT part
+    // of msw-status (that JSON gets handed around and will be served over an
+    // API), and the 5 s poll would fight the user's typing. Loaded on demand.
+    function notesLoad(cb) {
+        exec.run(notesTool + " read", function(out, err, code) { cb(code === 0 ? out : "", code); });
+    }
+    function notesMtime(cb) {
+        exec.run(notesTool + " mtime", function(out, err, code) {
+            cb(code === 0 ? parseInt(out.trim(), 10) || 0 : -1);
+        });
+    }
+    // msw-notes write prints the mtime it just set (part of the SAME
+    // invocation that wrote the file) so the caller can adopt it directly
+    // instead of issuing a second, separate "mtime" call afterwards -- a
+    // second call would leave a window in which an external writer could
+    // land and get silently mistaken for our own write. cb receives
+    // (exitCode, mtimeOrMinus1).
+    function notesSave(text, cb) {
+        var b64 = Qt.btoa(unescape(encodeURIComponent(text)));
+        exec.run(notesTool + " write --base64 '" + b64 + "'", function(out, err, code) {
+            cb(code, code === 0 ? (parseInt(out.trim(), 10) || 0) : -1);
+        });
+    }
+
     // --- Settings persistence (config.json writer) ----------------------------
     // The settings dialog (config/config.qml + ui/config*.qml) only edits
     // `plasmoid.configuration.*` flat KConfigXT keys -- QML has no direct
@@ -254,9 +293,11 @@ PlasmoidItem {
             features: {
                 performance: c.showPerformance,
                 mode: c.showMode,
+                network: c.showNetwork,
                 remote: c.showRemote,
                 services: c.showServices,
-                firewall: c.showFirewall
+                firewall: c.showFirewall,
+                notes: c.showNotes
             }
         };
     }
@@ -318,9 +359,11 @@ PlasmoidItem {
         function onRdpBindChanged() { root.requestPersist(); }
         function onShowPerformanceChanged() { root.requestPersist(); }
         function onShowModeChanged() { root.requestPersist(); }
+        function onShowNetworkChanged() { root.requestPersist(); }
         function onShowRemoteChanged() { root.requestPersist(); }
         function onShowServicesChanged() { root.requestPersist(); }
         function onShowFirewallChanged() { root.requestPersist(); }
+        function onShowNotesChanged() { root.requestPersist(); }
     }
 
     Component.onCompleted: refresh()
@@ -362,13 +405,14 @@ PlasmoidItem {
     }
 
     // --- Full representation (popup / desktop) -------------------------------
-    // Tabbed: Overview | Performance | Mode | Remote Access | Services | Firewall.
+    // Tabbed: Overview | Performance | Mode | Network | Remote Access | Services | Firewall | Notes.
     // Overview is the default tab (currentIndex: 0), so the popup always opens there.
     // Every tab gets access to this PlasmoidItem's state/functions via ctrl:root
     // -- separate .qml files don't otherwise see `root`/`exec` (no global
     // scope). OverviewTab also can't see `tabs` (lives here in the
     // fullRepresentation scope), so it passes clicks up through the
-    // navigate(index) signal instead.
+    // navigate(key) signal instead, resolved against visibleTabs below via
+    // indexOfTab().
     //
     // Visible tabs are config-driven (General settings page's "Visible tabs"
     // checkboxes -> Plasmoid.configuration.show<Key>, default true -- see
@@ -397,9 +441,11 @@ PlasmoidItem {
             { key: "overview", label: "Overview", always: true },
             { key: "performance", label: "Performance", always: false, show: Plasmoid.configuration.showPerformance },
             { key: "mode", label: "Mode", always: false, show: Plasmoid.configuration.showMode },
+            { key: "network", label: "Network", always: false, show: Plasmoid.configuration.showNetwork },
             { key: "remote", label: "Remote Access", always: false, show: Plasmoid.configuration.showRemote },
             { key: "services", label: "Services", always: false, show: Plasmoid.configuration.showServices },
-            { key: "firewall", label: "Firewall", always: false, show: Plasmoid.configuration.showFirewall }
+            { key: "firewall", label: "Firewall", always: false, show: Plasmoid.configuration.showFirewall },
+            { key: "notes", label: "Notes", always: false, show: Plasmoid.configuration.showNotes }
         ]
 
         // The filtered model: recomputed automatically whenever allTabsData
@@ -417,22 +463,48 @@ PlasmoidItem {
             case "overview": return overviewComp;
             case "performance": return performanceComp;
             case "mode": return modeComp;
+            case "network": return networkComp;
             case "remote": return remoteComp;
             case "services": return servicesComp;
             case "firewall": return firewallComp;
+            case "notes": return notesComp;
             }
             return null;
+        }
+
+        // Resolves a navigation key (from OverviewTab's navigate signal)
+        // against the *visible* tabs, so a hidden tab can never misdirect a
+        // click onto whatever happens to sit at that position. Looks the key
+        // up by value rather than hard-coding the current key set, so future
+        // tabs need no changes here. Returns -1 if the key isn't visible
+        // (e.g. its own tab is hidden) -- the caller must treat that as "do
+        // nothing", not as index 0.
+        function indexOfTab(key) {
+            for (var i = 0; i < visibleTabs.length; i++)
+                if (visibleTabs[i].key === key) return i;
+            return -1;
         }
 
         // One Component per tab, each with `ctrl: root` set inline (so the
         // Loader below never needs an onLoaded/item.ctrl-assignment step --
         // the property is already bound at instantiation time).
-        Component { id: overviewComp; OverviewTab { ctrl: root; onNavigate: (i) => tabs.currentIndex = i } }
+        Component {
+            id: overviewComp
+            OverviewTab {
+                ctrl: root
+                onNavigate: (key) => {
+                    var i = fullRep.indexOfTab(key);
+                    if (i >= 0) tabs.currentIndex = i;
+                }
+            }
+        }
         Component { id: performanceComp; PerformanceTab { ctrl: root } }
         Component { id: modeComp; ModeTab { ctrl: root } }
+        Component { id: networkComp; NetworkTab { ctrl: root } }
         Component { id: remoteComp; RemoteAccessTab { ctrl: root } }
         Component { id: servicesComp; ServicesTab { ctrl: root } }
         Component { id: firewallComp; FirewallTab { ctrl: root } }
+        Component { id: notesComp; NotesTab { ctrl: root } }
 
         PlasmaComponents3.TabBar {
             id: tabs

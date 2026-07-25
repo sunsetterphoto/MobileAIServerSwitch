@@ -1,4 +1,4 @@
-# MobileServerSwitch — packaging convenience targets.
+# MobileAIServerSwitch — packaging convenience targets.
 # Everything here is optional; install.sh/uninstall.sh do not depend on it.
 
 PLASMOID_ID  := io.github.sunsetterphoto.mobileserverswitch

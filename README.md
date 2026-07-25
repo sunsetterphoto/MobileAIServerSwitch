@@ -1,4 +1,4 @@
-# Mobile Server Switch
+# Mobile AI Server Switch
 
 **A KDE Plasma 6 widget to monitor and control a workstation/laptop that's
 temporarily running as a server** — mode, performance/power, remote access,
@@ -13,7 +13,7 @@ phone over your Tailnet.
 
 Laptops/workstations sometimes double as a server for a while — a
 remote-desktop host for game streaming, a compute box, a media or dev
-server — and then go back to being a normal laptop. Mobile Server Switch
+server — and then go back to being a normal laptop. Mobile AI Server Switch
 started as a simple server/laptop toggle and grew into a **comprehensive
 control and status center**: mode, performance/power, remote access,
 services and firewall, all controllable remotely over your Tailnet — from
@@ -21,18 +21,26 @@ your phone, without needing a terminal.
 
 ## Screenshots
 
-> 📸 **Screenshots coming soon.** The widget ships with six tabs — **Overview**,
-> **Performance**, **Mode**, **Remote Access**, **Services** and **Firewall** —
-> plus an in-widget settings dialog (network, services, mode, firewall apps,
-> remote access). Captures of the running widget will be added here shortly.
+![Overview tab](docs/img/overview.png)
 
-<!-- Screenshot layout to restore once docs/img/*.png exist:
+The **Overview** tab: operating mode and battery, the performance profile and
+what the discrete GPU is drawing, remote-access indicators, the machine's
+addresses, and how many services are up — everything at a glance, with each
+section clicking through to its own tab. Addresses are redacted in this
+capture.
+
+> 📸 The remaining tabs — **Performance**, **Mode**, **Network**, **Remote
+> Access**, **Services**, **Firewall** and **Notes** — plus the in-widget
+> settings dialog will be captured next.
+
+<!-- Screenshot layout to restore once the remaining docs/img/*.png exist:
 | Overview | Performance | Mode |
 |---|---|---|
 | ![Overview tab](docs/img/overview.png) | ![Performance tab](docs/img/performance.png) | ![Mode tab](docs/img/mode.png) |
-| Remote Access | Services | Firewall |
-| ![Remote Access tab](docs/img/remote.png) | ![Services tab](docs/img/services.png) | ![Firewall tab](docs/img/firewall.png) |
-![Settings](docs/img/settings.png)
+| Network | Remote Access | Services |
+| ![Network tab](docs/img/network.png) | ![Remote Access tab](docs/img/remote.png) | ![Services tab](docs/img/services.png) |
+| Firewall | Notes | Settings |
+| ![Firewall tab](docs/img/firewall.png) | ![Notes tab](docs/img/notes.png) | ![Settings](docs/img/settings.png) |
 -->
 
 
@@ -43,9 +51,11 @@ your phone, without needing a terminal.
 | **Overview** | Compact read-only summary: mode, performance preset, dGPU power draw, battery/AC, Tailnet IP, SSH/remote-desktop status, active services, Wake-on-LAN. Sections jump to their detail tab on click. |
 | **Performance** | Three presets (power saver / balanced / performance) via KDE's PowerProfiles (`org.freedesktop.UPower.PowerProfiles`) plus a fine CPU-cap slider (`intel_pstate/max_perf_pct`, 16-100%, turbo on/off). Also: dGPU runtime power management, WiFi/Bluetooth radios, Energy Performance Preference (EPP). |
 | **Mode** | Server ⇄ Laptop switch. Server mode favors uninterrupted uptime (screen lock/suspend behavior, charging, background services); switching back to Laptop stops the configured server services and asks for confirmation first. |
+| **Network** | How the machine is reachable right now: hostname, which interface carries the default route and via which gateway, the active DNS resolvers, and every interface with its IPv4/IPv6 addresses (selectable, so they can be copied). Virtual interfaces sort last and are labelled as such, so a bridge is not mistaken for a way in. |
 | **Remote Access** | Status and details for SSH, RDP (KRDP), VNC, Sunshine, KDE Connect, Tailnet (copyable IP), Wake-on-LAN. On/off switches for RDP and Sunshine; **SSH and Tailscale are deliberately read-only** (lockout protection). |
 | **Services** | A configurable list of user/system services (systemd) with live status, port reachability, and start/stop. |
 | **Firewall** | firewalld status (zone, LAN interfaces, open ports, SSH always shown allowed) plus targeted LAN-only blocks for configured apps (e.g. RDP/VNC). Tailnet access is never affected by these blocks. |
+| **Notes** | A scratchpad for what matters about this machine, stored as a plain file (`~/.config/mobileserverswitch/notes.md`, mode 600) so it stays editable over SSH with any editor. Saves are debounced; if the file changed outside the widget, an automatic save is suppressed and you are asked instead — an automatic action never overwrites someone else's edit. |
 
 ## Requirements & compatibility
 
@@ -68,8 +78,8 @@ your phone, without needing a terminal.
 ### Quick
 
 ```bash
-git clone https://github.com/sunsetterphoto/MobileServerSwitch.git
-cd MobileServerSwitch
+git clone https://github.com/sunsetterphoto/MobileAIServerSwitch.git
+cd MobileAIServerSwitch
 ./install.sh
 ```
 
@@ -97,7 +107,7 @@ sudo install -D -m 755 system/usr-local-sbin/msw-*-apply -t /usr/local/sbin/
 ```
 
 Then add the widget to a panel or the desktop as usual ("Add Widgets" →
-"Mobile Server Switch").
+"Mobile AI Server Switch").
 
 ## Configuration
 
@@ -127,7 +137,7 @@ session, and any boot-time unit always agree on state.
 
 ```
 ┌─────────────────────────────┐        reads         ┌───────────────────┐
-│  Plasmoid (QML) — 6 tabs    │ ───────────────────▶  │  msw-status --json │
+│  Plasmoid (QML) — 8 tabs    │ ───────────────────▶  │  msw-status --json │
 │  pure GUI, no logic          │                       └───────────────────┘
 └─────────────────────────────┘                                │
               │ calls (actions)                                 │ aggregates
@@ -140,7 +150,7 @@ session, and any boot-time unit always agree on state.
 ```
 
 ```
-plasmoid/io.github.sunsetterphoto.mobileserverswitch/   Plasma applet (QML) — pure GUI, 6 tabs
+plasmoid/io.github.sunsetterphoto.mobileserverswitch/   Plasma applet (QML) — pure GUI, 8 tabs
 bin/msw-status                state aggregator -> JSON (the widget interface)
 bin/msw-mode                  server/laptop switch (PowerDevil, locker, services, charging)
 bin/msw-perf                  performance: 3 presets (D-Bus PowerProfiles) + fine CPU cap

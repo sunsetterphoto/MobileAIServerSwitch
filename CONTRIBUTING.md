@@ -1,4 +1,4 @@
-# Contributing to Mobile Server Switch
+# Contributing to Mobile AI Server Switch
 
 Thanks for your interest in contributing. This project is a small,
 security-conscious tool, so the bar for changes touching privileged code

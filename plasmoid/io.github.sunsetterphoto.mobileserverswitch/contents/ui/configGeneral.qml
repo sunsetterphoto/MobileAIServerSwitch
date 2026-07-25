@@ -28,12 +28,16 @@ ColumnLayout {
     property bool cfg_showPerformanceDefault: true
     property alias cfg_showMode: showModeCheck.checked
     property bool cfg_showModeDefault: true
+    property alias cfg_showNetwork: showNetworkCheck.checked
+    property bool cfg_showNetworkDefault: true
     property alias cfg_showRemote: showRemoteCheck.checked
     property bool cfg_showRemoteDefault: true
     property alias cfg_showServices: showServicesCheck.checked
     property bool cfg_showServicesDefault: true
     property alias cfg_showFirewall: showFirewallCheck.checked
     property bool cfg_showFirewallDefault: true
+    property alias cfg_showNotes: showNotesCheck.checked
+    property bool cfg_showNotesDefault: true
 
     spacing: Kirigami.Units.smallSpacing
 
@@ -56,9 +60,11 @@ ColumnLayout {
     }
     QQC2.CheckBox { id: showPerformanceCheck; text: "Performance" }
     QQC2.CheckBox { id: showModeCheck; text: "Mode" }
+    QQC2.CheckBox { id: showNetworkCheck; text: "Network" }
     QQC2.CheckBox { id: showRemoteCheck; text: "Remote Access" }
     QQC2.CheckBox { id: showServicesCheck; text: "Services" }
     QQC2.CheckBox { id: showFirewallCheck; text: "Firewall" }
+    QQC2.CheckBox { id: showNotesCheck; text: "Notes" }
 
     Item { Layout.fillHeight: true }
 }

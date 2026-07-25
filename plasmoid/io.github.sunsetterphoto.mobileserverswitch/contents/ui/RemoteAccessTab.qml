@@ -146,9 +146,16 @@ ColumnLayout {
     StatusRow {
         on: remoteAccessTab.vncState.active === true
         label: "VNC"
-        detail: !remoteAccessTab.vncState.installed
+        // 5900-5903 is not ours alone: libvirt's SPICE (autoport) starts at
+        // 5900 as well. A listener we cannot name belongs to another user,
+        // so say that instead of claiming our own VNC server is running.
+        detail: !remoteAccessTab.vncState.installed && !remoteAccessTab.vncState.active
                 ? "not installed"
-                : (remoteAccessTab.vncState.active ? "running · :5900" : "installed, off")
+                : (remoteAccessTab.vncState.active
+                   ? (remoteAccessTab.vncState.owner
+                      ? remoteAccessTab.vncState.owner + " · :" + remoteAccessTab.vncState.port
+                      : "in use by another process (e.g. a VM console) · :" + remoteAccessTab.vncState.port)
+                   : "installed, off")
     }
 
     Kirigami.Separator { Layout.fillWidth: true; visible: remoteAccessTab.tailscaleAvailable }

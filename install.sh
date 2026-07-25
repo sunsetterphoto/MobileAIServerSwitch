@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — installs Mobile Server Switch onto this system: the plasmoid,
+# install.sh — installs Mobile AI Server Switch onto this system: the plasmoid,
 # the 6 CLIs, the 4 privileged apply helpers, an optional systemd unit, a
 # scoped sudoers grant (opt-in, consent-gated) and a default config.
 # Idempotent (safe to re-run). See uninstall.sh for the reverse, and
@@ -218,7 +218,7 @@ esac
 step "Next steps"
 cat <<EOF
   1. Reload the plasmoid:  kquitapp6 plasmashell && kstart plasmashell  (or log out/in)
-  2. Right-click the desktop/panel -> Add Widgets... -> search "Mobile Server Switch"
+  2. Right-click the desktop/panel -> Add Widgets... -> search "Mobile AI Server Switch"
   3. Edit $CONFIG_DST to enable services / override auto-detection.
 EOF
 [ "$DRY_RUN" = 1 ] && log "(dry-run: nothing was installed)"
