@@ -51,6 +51,35 @@ U='Grüße 🚀 日本語'
 $CLI write --base64 "$(b64 "$U")" >/dev/null
 assert_eq "$($CLI read)" "$U" "unicode survives the round trip"
 
+# --- byte-exact round trip ------------------------------------------------------
+# Regression coverage: an earlier draft decoded base64 into a shell variable
+# via $(...) command substitution, which silently strips ALL trailing
+# newlines (and cannot hold embedded NULs at all), corrupting any note that
+# ends with a blank line. Ordinary `$($CLI read)` string comparison would
+# hide that exact bug HERE TOO (bash strips trailing newlines from command
+# substitution in the test itself), so these compare raw files with cmp/
+# wc -c, never `$($CLI read)`.
+roundtrip_bytes() {
+    # $1 = fixture file with the exact expected bytes, $2 = description
+    local expected="$1" desc="$2" actual="$TMPDIR_T/actual.bin"
+    "$CLI" write --base64 "$(base64 -w0 "$expected")" >/dev/null
+    "$CLI" read > "$actual"
+    assert_eq "$(wc -c < "$actual")" "$(wc -c < "$expected")" "$desc (byte count matches)"
+    assert "cmp -s \"$actual\" \"$expected\"" "$desc (byte-exact via cmp)"
+}
+
+printf 'single trailing newline\n' > "$TMPDIR_T/fx_single_nl.bin"
+roundtrip_bytes "$TMPDIR_T/fx_single_nl.bin" "text ending in a single trailing newline"
+
+printf 'several blank lines follow\n\n\n\n' > "$TMPDIR_T/fx_multi_nl.bin"
+roundtrip_bytes "$TMPDIR_T/fx_multi_nl.bin" "text ending in several blank lines"
+
+printf '\n\n\n\n\n' > "$TMPDIR_T/fx_only_nl.bin"
+roundtrip_bytes "$TMPDIR_T/fx_only_nl.bin" "text consisting only of newlines"
+
+printf 'no trailing newline at all' > "$TMPDIR_T/fx_no_nl.bin"
+roundtrip_bytes "$TMPDIR_T/fx_no_nl.bin" "text with no trailing newline at all (fix must not overcorrect)"
+
 # --- no leftover temp files ---------------------------------------------------
 assert_eq "$(find "$TMPDIR_T" -name '.notes.md.*' | wc -l)" "0" "no temp files left behind"
 pass
