@@ -36,6 +36,8 @@ ColumnLayout {
     property bool cfg_showServicesDefault: true
     property alias cfg_showFirewall: showFirewallCheck.checked
     property bool cfg_showFirewallDefault: true
+    property alias cfg_showNotes: showNotesCheck.checked
+    property bool cfg_showNotesDefault: true
 
     spacing: Kirigami.Units.smallSpacing
 
@@ -62,6 +64,7 @@ ColumnLayout {
     QQC2.CheckBox { id: showRemoteCheck; text: "Remote Access" }
     QQC2.CheckBox { id: showServicesCheck; text: "Services" }
     QQC2.CheckBox { id: showFirewallCheck; text: "Firewall" }
+    QQC2.CheckBox { id: showNotesCheck; text: "Notes" }
 
     Item { Layout.fillHeight: true }
 }

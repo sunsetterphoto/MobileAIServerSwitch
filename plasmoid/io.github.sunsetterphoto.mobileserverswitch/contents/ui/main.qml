@@ -60,6 +60,7 @@ PlasmoidItem {
     readonly property string perfTool: "msw-perf"
     readonly property string powerTool: "msw-power"
     readonly property string firewallTool: "msw-firewall"
+    readonly property string notesTool: "msw-notes"
 
     // --- State, read from msw-status --json ----------------------------------
     property var status: ({})          // last successfully parsed overall object
@@ -205,6 +206,22 @@ PlasmoidItem {
         exec.run(cmd, function(){ refresh(); });
     }
 
+    // Notes are user data, not machine state: they are deliberately NOT part
+    // of msw-status (that JSON gets handed around and will be served over an
+    // API), and the 5 s poll would fight the user's typing. Loaded on demand.
+    function notesLoad(cb) {
+        exec.run(notesTool + " read", function(out, err, code) { cb(code === 0 ? out : "", code); });
+    }
+    function notesMtime(cb) {
+        exec.run(notesTool + " mtime", function(out, err, code) {
+            cb(code === 0 ? parseInt(out.trim(), 10) || 0 : -1);
+        });
+    }
+    function notesSave(text, cb) {
+        var b64 = Qt.btoa(unescape(encodeURIComponent(text)));
+        exec.run(notesTool + " write --base64 '" + b64 + "'", function(out, err, code) { cb(code); });
+    }
+
     // --- Settings persistence (config.json writer) ----------------------------
     // The settings dialog (config/config.qml + ui/config*.qml) only edits
     // `plasmoid.configuration.*` flat KConfigXT keys -- QML has no direct
@@ -257,7 +274,8 @@ PlasmoidItem {
                 network: c.showNetwork,
                 remote: c.showRemote,
                 services: c.showServices,
-                firewall: c.showFirewall
+                firewall: c.showFirewall,
+                notes: c.showNotes
             }
         };
     }
@@ -323,6 +341,7 @@ PlasmoidItem {
         function onShowRemoteChanged() { root.requestPersist(); }
         function onShowServicesChanged() { root.requestPersist(); }
         function onShowFirewallChanged() { root.requestPersist(); }
+        function onShowNotesChanged() { root.requestPersist(); }
     }
 
     Component.onCompleted: refresh()
@@ -364,7 +383,7 @@ PlasmoidItem {
     }
 
     // --- Full representation (popup / desktop) -------------------------------
-    // Tabbed: Overview | Performance | Mode | Network | Remote Access | Services | Firewall.
+    // Tabbed: Overview | Performance | Mode | Network | Remote Access | Services | Firewall | Notes.
     // Overview is the default tab (currentIndex: 0), so the popup always opens there.
     // Every tab gets access to this PlasmoidItem's state/functions via ctrl:root
     // -- separate .qml files don't otherwise see `root`/`exec` (no global
@@ -403,7 +422,8 @@ PlasmoidItem {
             { key: "network", label: "Network", always: false, show: Plasmoid.configuration.showNetwork },
             { key: "remote", label: "Remote Access", always: false, show: Plasmoid.configuration.showRemote },
             { key: "services", label: "Services", always: false, show: Plasmoid.configuration.showServices },
-            { key: "firewall", label: "Firewall", always: false, show: Plasmoid.configuration.showFirewall }
+            { key: "firewall", label: "Firewall", always: false, show: Plasmoid.configuration.showFirewall },
+            { key: "notes", label: "Notes", always: false, show: Plasmoid.configuration.showNotes }
         ]
 
         // The filtered model: recomputed automatically whenever allTabsData
@@ -425,6 +445,7 @@ PlasmoidItem {
             case "remote": return remoteComp;
             case "services": return servicesComp;
             case "firewall": return firewallComp;
+            case "notes": return notesComp;
             }
             return null;
         }
@@ -461,6 +482,7 @@ PlasmoidItem {
         Component { id: remoteComp; RemoteAccessTab { ctrl: root } }
         Component { id: servicesComp; ServicesTab { ctrl: root } }
         Component { id: firewallComp; FirewallTab { ctrl: root } }
+        Component { id: notesComp; NotesTab { ctrl: root } }
 
         PlasmaComponents3.TabBar {
             id: tabs
