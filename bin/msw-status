@@ -390,7 +390,7 @@ if [ -n "$VNC_LINES" ]; then
     VNC_ACTIVE=true
     VNC_PORT=$(awk '{ n=split($4,a,":"); print a[n] }' <<<"$VNC_LINES" | sort -n | head -1)
     [[ "$VNC_PORT" =~ ^[0-9]+$ ]] || VNC_PORT=null
-    VNC_OWNER=$(grep -o 'users:((\"[^\"]*\"' <<<"$VNC_LINES" | head -1 | sed 's/.*((\"//;s/\"$//')
+    VNC_OWNER=$(grep -o 'users:(("[^"]*"' <<<"$VNC_LINES" | head -1 | sed 's/.*(("//;s/"$//')
 else
     VNC_ACTIVE=false
     VNC_PORT=null
