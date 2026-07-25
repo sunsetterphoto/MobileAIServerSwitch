@@ -92,10 +92,11 @@ ColumnLayout {
     Kirigami.Separator { Layout.fillWidth: true }
 
     /*
-     * Devices & power: dGPU sleep, WiFi, Bluetooth, EPP. All via
-     * ctrl.powerCmd() (msw-power) -- no bare root/exec access, same wrapping
-     * as ctrl.perfCmd() above. ASPM and USB are deliberately left out (ASPM
-     * unsupported by firmware on this class of device, USB not switchable).
+     * Devices & power: dGPU sleep, WiFi, Bluetooth. All via ctrl.powerCmd()
+     * (msw-power) -- no bare root/exec access, same wrapping as ctrl.perfCmd()
+     * above. ASPM and USB are deliberately left out (ASPM unsupported by
+     * firmware on this class of device, USB not switchable), and EPP was
+     * removed from the UI (see the note further down).
      */
     PlasmaComponents3.Label {
         text: "Devices & Power"
@@ -105,7 +106,7 @@ ColumnLayout {
     // Local fallbacks until the first poll completes (ctrl.status.gpu/.power_extra
     // are undefined until then).
     readonly property var gpuState: (ctrl.status && ctrl.status.gpu) || ({ present: false, awake: false, watts: null, dstate: "?", control: "?" })
-    readonly property var powerExtra: (ctrl.status && ctrl.status.power_extra) || ({ epp: "?", wifi: "?", bt: "?" })
+    readonly property var powerExtra: (ctrl.status && ctrl.status.power_extra) || ({ wifi: "?", bt: "?" })
 
     // dGPU -- hidden entirely when there's no discrete GPU on this system
     // (msw-status gpu.present, PCI device 0000:01:00.0 absent).
@@ -173,37 +174,13 @@ ColumnLayout {
         }
     }
 
-    // EPP (energy bias) -- hidden when unreadable (msw-status reports "?"
-    // when the cpufreq energy_performance_preference sysfs file is absent,
-    // e.g. non-Intel CPU or unsupported governor).
-    RowLayout {
-        Layout.fillWidth: true
-        spacing: Kirigami.Units.smallSpacing
-        visible: !!performanceTab.powerExtra.epp && performanceTab.powerExtra.epp !== "?"
-        PlasmaComponents3.Label { text: "Energy bias (EPP)"; opacity: 0.7 }
-        PlasmaComponents3.ComboBox {
-            id: eppCombo
-            Layout.fillWidth: true
-            model: ["default", "performance", "balance_performance", "balance_power", "power"]
-
-            // Derive currentIndex ONLY from status (a function, not a direct
-            // binding to onActivated) -- this avoids a binding loop: setting
-            // currentIndex here does not trigger onActivated (that only fires
-            // on user interaction), so powerCmd is not re-triggered on every
-            // status refresh.
-            function indexForEpp() {
-                var idx = eppCombo.model.indexOf(performanceTab.powerExtra.epp);
-                return idx >= 0 ? idx : 0;
-            }
-            currentIndex: indexForEpp()
-
-            onActivated: {
-                var picked = currentValue;
-                if (picked !== performanceTab.powerExtra.epp)
-                    ctrl.powerCmd("epp " + picked);
-            }
-        }
-    }
+    // The Energy Performance Preference (EPP) selector used to sit here. It was
+    // removed: its picker kept snapping back to the value the last status poll
+    // reported, and EPP is the weakest of these controls anyway -- the preset
+    // and the CPU cap decide the machine's behaviour, EPP only biases how
+    // eagerly the CPU ramps between them. `msw-power epp <pref>` still exists
+    // for anyone who wants it from a shell; it was the widget control that was
+    // not worth its own bug.
 
     Item { Layout.fillHeight: true }
 }
