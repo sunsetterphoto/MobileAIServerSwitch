@@ -12,8 +12,11 @@ GPU_CTRL=/sys/bus/pci/devices/0000:01:00.0/power/control
 EPP_AVAIL=/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_available_preferences
 ASPM_POLICY=/sys/module/pcie_aspm/parameters/policy
 
-WHAT=${1:?Usage: msw-power-apply <gpu|wifi|bt|epp|aspm|wol> <value>}
-VAL=${2:?Usage: msw-power-apply <gpu|wifi|bt|epp|aspm|wol> <value>}
+# exit 2 = bad invocation, same code every value rejection below uses.
+# ${1:?...} would exit 1, which this helper reserves for "wrote it, verify failed".
+[ $# -eq 2 ] || { echo "Usage: msw-power-apply <gpu|wifi|bt|epp|aspm|wol> <value>" >&2; exit 2; }
+WHAT=$1
+VAL=$2
 
 case "$WHAT" in
     gpu)

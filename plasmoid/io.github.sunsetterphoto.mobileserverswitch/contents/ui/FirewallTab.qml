@@ -118,7 +118,10 @@ ColumnLayout {
             }
             PlasmaComponents3.Label {
                 Layout.fillWidth: true
-                text: "SSH: " + (firewallTab.fw.ssh_allowed ? "allowed" : "?") + " (not switchable)"
+                // false is a real firewalld answer, not a missing one -> say so
+                text: "SSH: " + (firewallTab.fw.ssh_allowed === true ? "allowed"
+                                 : (firewallTab.fw.ssh_allowed === false ? "blocked" : "?"))
+                      + " (not switchable)"
             }
         }
 

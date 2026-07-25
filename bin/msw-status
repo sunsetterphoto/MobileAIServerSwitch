@@ -7,6 +7,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 . "$SCRIPT_DIR/msw-config"
 
 TAILNET_PREFIX="100."          # Tailscale CGNAT range 100.64.0.0/10
+TAILNET_PREFIX6="fd7a:115c:a1e0:"   # Tailscale ULA range fd7a:115c:a1e0::/48
 PSTATE=/sys/devices/system/cpu/intel_pstate
 GPU_DEV=/sys/bus/pci/devices/0000:01:00.0
 WOL_NIC=$(cfg_or_detect network.wol_nic detect_wol_nic)
@@ -20,10 +21,13 @@ exposure_for_port() {  # $1 = port ; echo "localhost" | "Tailnet" | "LAN" | "LAN
     while read -r a; do
         [ -z "$a" ] && continue
         ip=${a%:*}; ip=${ip#\[}; ip=${ip%\]}
+        ip=${ip%\%*}          # strip an IPv6 zone index (fe80::1%eth0)
+        ip=${ip,,}            # ss prints hex lowercase, but do not rely on it
         case "$ip" in
             127.0.0.1|::1)         local=1 ;;
             0.0.0.0|::|\*)         lan=1; tail=1 ;;
             ${TAILNET_PREFIX}*)    tail=1 ;;
+            ${TAILNET_PREFIX6}*)   tail=1 ;;
             *)                     lan=1 ;;
         esac
     done <<< "$addrs"
@@ -44,13 +48,15 @@ wol_json() {  # $1 = nic
     local nic=$1 out supported=null enabled=null mode="?"
     out=$(sudo -n ethtool "$nic" 2>/dev/null)
     if [ -n "$out" ]; then
-        echo "$out" | grep -q "Supports Wake-on:" && supported=true || supported=false
+        # A missing line means UNKNOWN, not false: ethtool output can be partial
+        # (truncated, unusual driver), and claiming "not supported" / "off" for
+        # something we could not read would be a lie the widget then displays.
+        echo "$out" | grep -q "Supports Wake-on:" && supported=true
         mode=$(echo "$out" | awk -F': ' '/^[[:space:]]*Wake-on:/{print $2}' | tr -d '[:space:]')
         if [ -n "$mode" ]; then
             [ "$mode" != "d" ] && enabled=true || enabled=false
         else
-            mode="?"
-            enabled=false
+            mode="?"      # enabled stays null = unknown
         fi
     fi
     jq -n --argjson supported "$supported" --argjson enabled "$enabled" --arg mode "$mode" \

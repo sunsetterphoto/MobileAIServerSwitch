@@ -17,33 +17,32 @@ apply() { sudo -n "$APPLY" "$1" "$2"; }   # $1=what $2=value
 
 usage() { sed -n '2,9p' "$0" | sed 's/^# \?//'; }
 
-case "${1:-}" in
+case "${1:-}" in ""|-h|--help|help) usage; exit 0 ;; esac
+
+# Exactly <what> <value> -- no more, no less. A surplus argument used to be
+# silently ignored, and a missing one exited 1 via ${2:?...}; exit 1 is
+# reserved for "the switch was attempted and failed", 2 for "bad invocation".
+[ $# -eq 2 ] || { echo "expected exactly: msw-power <what> <value>" >&2; usage >&2; exit 2; }
+v=$2
+
+case "$1" in
     gpu)
-        v=${2:?Usage: msw-power gpu keep|auto}
         case "$v" in keep|auto) apply gpu "$v" ;; *) echo "gpu: expected keep|auto" >&2; exit 2 ;; esac
         ;;
     wifi)
-        v=${2:?Usage: msw-power wifi on|off}
         case "$v" in on|off) apply wifi "$v" ;; *) echo "wifi: expected on|off" >&2; exit 2 ;; esac
         ;;
     bt)
-        v=${2:?Usage: msw-power bt on|off}
         case "$v" in on|off) apply bt "$v" ;; *) echo "bt: expected on|off" >&2; exit 2 ;; esac
         ;;
     epp)
-        v=${2:?Usage: msw-power epp <pref>}
         apply epp "$v"
         ;;
     aspm)
-        v=${2:?Usage: msw-power aspm <policy>}
         apply aspm "$v"
         ;;
     wol)
-        v=${2:?Usage: msw-power wol on|off}
         case "$v" in on|off) apply wol "$v" ;; *) echo "wol: expected on|off" >&2; exit 2 ;; esac
-        ;;
-    ""|-h|--help|help)
-        usage
         ;;
     *) echo "Unknown: $1" >&2; exit 2 ;;
 esac

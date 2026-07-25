@@ -190,9 +190,10 @@ ColumnLayout {
             Layout.fillWidth: true
             PlasmaComponents3.Label { text: "Wake-on-LAN" }
             PlasmaComponents3.Label {
-                text: remoteAccessTab.wolState.enabled
+                // null = ethtool unreadable -> "unknown", never a made-up "off"
+                text: remoteAccessTab.wolState.enabled === true
                       ? "Magic packet (" + remoteAccessTab.wolState.mode + ")"
-                      : "off"
+                      : (remoteAccessTab.wolState.enabled === false ? "off" : "unknown")
                 opacity: 0.7
                 font: Kirigami.Theme.smallFont
             }
