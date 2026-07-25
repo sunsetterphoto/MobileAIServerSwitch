@@ -24,29 +24,37 @@ band() {  # echo "<lo> <hi> <target> <on|off>"
 }
 
 set_profile() {  # D-Bus, no root
-    busctl --system set-property org.freedesktop.UPower.PowerProfiles \
+    local err
+    # Keep busctl's own message: "Polkit/session?" is a guess, the D-Bus error
+    # says what actually went wrong (no service, denied, unknown profile).
+    err=$(busctl --system set-property org.freedesktop.UPower.PowerProfiles \
         /org/freedesktop/UPower/PowerProfiles \
-        org.freedesktop.UPower.PowerProfiles ActiveProfile "s" "$1" 2>/dev/null \
-        || echo "WARNING: PowerProfiles ActiveProfile=$1 not set (Polkit/session?)" >&2
+        org.freedesktop.UPower.PowerProfiles ActiveProfile "s" "$1" 2>&1) \
+        || echo "WARNING: PowerProfiles ActiveProfile=$1 not set: ${err:-busctl failed without a message}" >&2
 }
 
 apply_pct() { sudo -n "$APPLY" "$1" "$2"; }   # $1=pct $2=on|off
 
 case "${1:-}" in
     power-saver|balanced|performance)
+        # Surplus arguments used to be ignored silently -- reject them instead,
+        # so "msw-perf balanced 55" cannot look like it set a cap of 55.
+        [ $# -eq 1 ] || { echo "$1 takes no further argument" >&2; exit 2; }
         read -r _ _ tgt to <<<"$(band "$1")"
         set_profile "$1"
         apply_pct "$tgt" "$to"
         ;;
     pct)
-        pct=${2:?Usage: msw-perf pct <16..100>}
+        [ $# -eq 2 ] || { echo "Usage: msw-perf pct <16..100>" >&2; exit 2; }
+        pct=$2
         # keep current turbo state
         nt=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo 0)
         to=$([ "$nt" = 0 ] && echo on || echo off)
         apply_pct "$pct" "$to"
         ;;
     band)
-        band "${2:?Usage: msw-perf band <profile>}"
+        [ $# -eq 2 ] || { echo "Usage: msw-perf band <profile>" >&2; exit 2; }
+        band "$2"
         ;;
     ""|-h|--help|help)
         sed -n '2,7p' "$0" | sed 's/^# \?//'

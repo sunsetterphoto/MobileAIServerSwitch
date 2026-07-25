@@ -41,7 +41,9 @@ assert "jq -e '.remote.ssh | has(\"active\")' >/dev/null <<<\"\$J\"" "has .remot
 assert "jq -e '.remote.tailscale.ip4' >/dev/null <<<\"\$J\"" "has .remote.tailscale.ip4"
 assert "jq -e '.services | type == \"array\"' >/dev/null <<<\"\$J\"" ".services is an array"
 # GPU
-assert "jq -e '.gpu.present' >/dev/null <<<\"\$J\""       "has .gpu.present"
+# has() instead of truthiness: present=false is a valid answer, not a missing field
+assert "jq -e '.gpu | has(\"present\")' >/dev/null <<<\"\$J\""       "has .gpu.present"
+assert "jq -e '.gpu.present | type == \"boolean\"' >/dev/null <<<\"\$J\"" ".gpu.present is bool"
 assert "jq -e '.gpu | has(\"watts\")' >/dev/null <<<\"\$J\"" "has .gpu.watts (even if null)"
 assert "jq -e '.gpu | has(\"awake\")' >/dev/null <<<\"\$J\"" "has .gpu.awake"
 assert "jq -e '.gpu | has(\"dstate\")' >/dev/null <<<\"\$J\"" "has .gpu.dstate"
@@ -91,5 +93,35 @@ assert "jq -e '.services[0] | has(\"exposure\")' >/dev/null <<<\"\$J2\""  "confi
 assert "jq -e '.firewall.apps | has(\"myapp\")' >/dev/null <<<\"\$J2\""              "config-driven firewall.apps: custom app id present"
 assert "jq -e '.firewall.apps.myapp.blocked | type == \"boolean\"' >/dev/null <<<\"\$J2\"" "config-driven firewall.apps: myapp.blocked is bool"
 assert "jq -e '.firewall.apps | (has(\"rdp\") | not)' >/dev/null <<<\"\$J2\""        "config-driven firewall.apps: default rdp key gone once config defines its own apps"
+
+# --- exposure_for_port: unit test against a stubbed `ss` ----------------------
+# The classification decides whether the widget claims a port is reachable from
+# the LAN, so it is tested against fabricated socket lists instead of whatever
+# happens to listen on this host. The function and its two prefix constants are
+# extracted from the shipped CLI, so this exercises the real code, not a copy.
+(
+    eval "$(sed -n '/^TAILNET_PREFIX=/p;/^TAILNET_PREFIX6=/p;/^exposure_for_port()/,/^}/p' bin/msw-status)"
+    STUB=""
+    ss() { printf '%s' "$STUB"; }     # exposure_for_port only reads column 4
+    exposure_of() { STUB=$(printf 'LISTEN 0 128 %s *:*\n' $1); exposure_for_port 3389; }
+
+    assert_eq "$(exposure_of '100.75.62.108:3389')"      "Tailnet"   "IPv4 CGNAT address = Tailnet"
+    # Regression: a Tailscale IPv6 (ULA fd7a:115c:a1e0::/48) used to fall through
+    # to the default branch and was reported as LAN -- i.e. "reachable from the
+    # LAN" for a socket that is bound to the tailnet only.
+    assert_eq "$(exposure_of '[fd7a:115c:a1e0::1]:3389')" "Tailnet"   "Tailscale IPv6 ULA = Tailnet, not LAN"
+    assert_eq "$(exposure_of '[FD7A:115C:A1E0::1]:3389')" "Tailnet"   "Tailscale IPv6 matched case-insensitively"
+    assert_eq "$(exposure_of '127.0.0.1:3389')"          "localhost" "loopback IPv4 = localhost"
+    assert_eq "$(exposure_of '[::1]:3389')"              "localhost" "loopback IPv6 = localhost"
+    assert_eq "$(exposure_of '192.168.1.5:3389')"        "LAN"       "private IPv4 = LAN"
+    assert_eq "$(exposure_of '[fe80::1%enp11s0]:3389')"  "LAN"       "link-local with zone index = LAN"
+    assert_eq "$(exposure_of '[::]:3389')"               "LAN"       "wildcard bind = LAN"
+    assert_eq "$(exposure_of '[fd7a:115c:a1e0::1]:3389 192.168.1.5:3389')" "LAN" \
+              "a LAN socket outweighs the tailnet one"
+    assert_eq "$(exposure_of '127.0.0.1:3389 [fd7a:115c:a1e0::1]:3389')" "localhost+Tailnet" \
+              "loopback + tailnet listed together"
+    STUB=""
+    assert_eq "$(exposure_for_port 3389)"                ""          "nothing listening = empty"
+) || exit 1
 
 pass
