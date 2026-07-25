@@ -4,7 +4,8 @@
 #   msw-notes path                    print the notes file location
 #   msw-notes read                    print the content (missing file -> empty)
 #   msw-notes mtime                   modification time in epoch seconds (missing -> 0)
-#   msw-notes write --base64 <data>   write atomically, mode 600
+#   msw-notes write --base64 <data>   write atomically, mode 600; prints the
+#                                      new mtime (epoch seconds) on success
 #
 # The notes are user data, not machine state, which is why they are NOT part
 # of msw-status: notes about a server tend to contain credentials, and the
@@ -23,7 +24,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # Tests override MSW_NOTES_FILE to avoid touching the real notes.
 NOTES_FILE="${MSW_NOTES_FILE:-$(_msw_config_home)/.config/mobileserverswitch/notes.md}"
 
-usage() { sed -n '3,7p' "$0" | sed 's/^# \?//'; }
+usage() { sed -n '3,8p' "$0" | sed 's/^# \?//'; }
 
 case "${1:-}" in
     path)
@@ -60,6 +61,16 @@ case "${1:-}" in
         chmod 600 "$tmp"
         mv -f "$tmp" "$NOTES_FILE" || { echo "write: mv failed" >&2; exit 1; }
         trap - EXIT
+        # Print the mtime of the file we just wrote, read in THIS SAME
+        # invocation right after the rename -- not via a second, separate
+        # `msw-notes mtime` call. A second call would leave a window (an
+        # async round trip through the caller's process/event-loop, easily
+        # milliseconds or more) in which an external writer could land and
+        # get silently adopted as "the mtime of our own write". Reading it
+        # here still cannot close the window to absolute zero (something
+        # could in principle land between the mv and this stat), but shrinks
+        # it from "one external round trip" to one stat(2) call.
+        stat -c '%Y' "$NOTES_FILE"
         ;;
     "")
         usage >&2
