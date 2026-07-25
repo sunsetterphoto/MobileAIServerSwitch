@@ -171,13 +171,21 @@ NET_DEFAULT=$(jq -c '
 
 NET_DEFAULT_IFACE=$(jq -r 'if . == null then "" else (.iface // "") end' <<<"$NET_DEFAULT" 2>/dev/null)
 
+# Virtual-interface pattern uses `br[0-9-]`, not a literal `br-`: a hand-made
+# bridge on a VM host (a setup this project targets) is conventionally named
+# "br0", "br1", ... with no hyphen -- a literal `br-` only matched Docker's
+# "br-<hash>" form and let a plain bridge fall through to "ether", presenting
+# a virtual bridge as a physical link. The third-character class still
+# excludes unrelated names that merely start with "br" (e.g. a hypothetical
+# "bridge0" or "brcm0"), since neither has a digit or hyphen as the third
+# character.
 NET_IFACES=$(jq -c --arg def "$NET_DEFAULT_IFACE" '
     map(select(.ifname != "lo"))
     | map({
         name: .ifname,
         kind: (
           if   (.ifname | startswith("tailscale")) then "tailnet"
-          elif (.ifname | test("^(virbr|docker|podman|cni-|veth|br-)")) then "virtual"
+          elif (.ifname | test("^(virbr|docker|podman|cni-|veth|br[0-9-])")) then "virtual"
           elif (.ifname | test("^wl")) then "wifi"
           elif (.link_type == "ether") then "ether"
           else "other" end),
