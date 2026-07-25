@@ -1,4 +1,4 @@
-# MobileServerSwitch — scoped sudoers grant.
+# MobileAIServerSwitch — scoped sudoers grant.
 #
 # Grants NOPASSWD execution of EXACTLY the 4 privileged apply helpers under
 # /usr/local/sbin, and nothing else: no wildcards, no shell, no other paths,
