@@ -213,7 +213,9 @@ ColumnLayout {
             StatusRow {
                 on: overviewTab.wolState.enabled === true
                 label: "Wake-on-LAN"
-                detail: overviewTab.wolState.enabled ? "on" : "off"
+                // null = ethtool unreadable -> "unknown", never a made-up "off"
+                detail: overviewTab.wolState.enabled === true ? "on"
+                        : (overviewTab.wolState.enabled === false ? "off" : "unknown")
             }
         }
     }
