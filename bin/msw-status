@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# msw-status --json : aggregated Mobile Server Switch state as JSON (read-only).
+# msw-status --json : aggregated Mobile AI Server Switch state as JSON (read-only).
 # Single-source-of-truth interface between the CLIs and the plasmoid.
 set -uo pipefail
 
@@ -39,6 +39,55 @@ exposure_for_port() {  # $1 = port ; echo "localhost" | "Tailnet" | "LAN" | "LAN
 }
 
 port_active() { ss -tlnH "sport = :$1" 2>/dev/null | grep -q . && echo true || echo false; }
+
+# --- vnc_socket_json: who holds a range of ports, port and owner from the SAME
+#     socket -------------------------------------------------------------------
+# Reads `ss -tlnpH` lines on stdin (already filtered to the port range of
+# interest) and emits {"active":bool,"port":num|null,"owner":string|null}.
+#
+# `ss -tlnp` names the process for sockets owned by the invoking user and
+# stays silent for anyone else's -- that asymmetry needs no privileges and is
+# what tells our own krfb apart from a foreign listener (in practice a VM
+# console: libvirt's SPICE with autoport starts at 5900 too).
+#
+# port and owner MUST come from the same input line. An earlier version
+# computed them as two independent reductions over the whole input (numeric
+# minimum port across all lines; owner from the first line with a `users:((`
+# match) -- with a foreign listener on :5900 and krfb on :5901, that
+# misattributed krfb's name to the foreign port, exactly the false claim this
+# feature exists to eliminate. Building one "port owner" row per line first,
+# then sorting, keeps each pair tied to its socket.
+vnc_socket_json() {
+    local lines rows row port owner
+    lines=$(cat)
+    if [ -z "$lines" ]; then
+        jq -nc '{active:false,port:null,owner:null}'
+        return
+    fi
+    rows=$(
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            port=$(awk '{ n=split($4,a,":"); print a[n] }' <<<"$line")
+            [[ "$port" =~ ^[0-9]+$ ]] || continue
+            owner=$(grep -o 'users:(("[^"]*"' <<<"$line" | head -1 | sed 's/.*(("//;s/"$//')
+            printf '%s %s\n' "$port" "${owner:--}"
+        done <<< "$lines" | sort -n -k1,1
+    )
+    row=$(head -1 <<<"$rows")
+    if [ -z "$row" ]; then
+        # Something was listening (stdin was non-empty) but its local-address
+        # field did not parse as expected -- report active without guessing.
+        jq -nc '{active:true,port:null,owner:null}'
+        return
+    fi
+    port=$(awk '{print $1}' <<<"$row")
+    owner=$(awk '{print $2}' <<<"$row")
+    if [ "$owner" = "-" ]; then
+        jq -nc --argjson port "$port" '{active:true,port:$port,owner:null}'
+    else
+        jq -nc --argjson port "$port" --arg owner "$owner" '{active:true,port:$port,owner:$owner}'
+    fi
+}
 
 svc_active_user()   { systemctl --user is-active "$1" 2>/dev/null | grep -qx active && echo true || echo false; }
 svc_active_system() { systemctl is-active "$1" 2>/dev/null | grep -qx active && echo true || echo false; }
@@ -148,6 +197,87 @@ BT=$(rfkill list bluetooth 2>/dev/null | grep -q "Soft blocked: yes" && echo off
 # --- Wake-on-LAN -----------------------------------------------------------
 WOL=$(wol_json "$WOL_NIC")
 
+# --- Network: interfaces, default route, DNS ----------------------------------
+# `ip -j` emits real JSON (iproute2 >= 5), so this is a jq transform rather
+# than line parsing. Every branch degrades to empty/null instead of failing:
+# a missing `ip` must not break the status output.
+NET_HOST=$(hostname 2>/dev/null); [ -z "$NET_HOST" ] && NET_HOST="?"
+
+NET_ADDR_RAW=$(ip -j addr 2>/dev/null)
+[ -z "$NET_ADDR_RAW" ] && NET_ADDR_RAW="[]"
+NET_ROUTE_RAW=$(ip -j route show default 2>/dev/null)
+[ -z "$NET_ROUTE_RAW" ] && NET_ROUTE_RAW="[]"
+
+# The default route: LOWEST metric wins. This machine has two (ethernet at
+# metric 100, wifi at 600) -- taking the first entry would be a coin flip.
+NET_DEFAULT=$(jq -c '
+    map(select(.dst == "default"))
+    | sort_by(.metric // 0)
+    | if length == 0 then null
+      else { iface: .[0].dev, gateway: (.[0].gateway // null), ip4: (.[0].prefsrc // null) }
+      end' <<<"$NET_ROUTE_RAW" 2>/dev/null)
+[ -z "$NET_DEFAULT" ] && NET_DEFAULT=null
+
+NET_DEFAULT_IFACE=$(jq -r 'if . == null then "" else (.iface // "") end' <<<"$NET_DEFAULT" 2>/dev/null)
+
+# Virtual-interface pattern uses `br[0-9-]`, not a literal `br-`: a hand-made
+# bridge on a VM host (a setup this project targets) is conventionally named
+# "br0", "br1", ... with no hyphen -- a literal `br-` only matched Docker's
+# "br-<hash>" form and let a plain bridge fall through to "ether", presenting
+# a virtual bridge as a physical link. The third-character class still
+# excludes unrelated names that merely start with "br" (e.g. a hypothetical
+# "bridge0" or "brcm0"), since neither has a digit or hyphen as the third
+# character.
+NET_IFACES=$(jq -c --arg def "$NET_DEFAULT_IFACE" '
+    map(select(.ifname != "lo"))
+    | map({
+        name: .ifname,
+        kind: (
+          if   (.ifname | startswith("tailscale")) then "tailnet"
+          elif (.ifname | test("^(virbr|docker|podman|cni-|veth|br[0-9-])")) then "virtual"
+          elif (.ifname | test("^wl")) then "wifi"
+          elif (.link_type == "ether") then "ether"
+          else "other" end),
+        # operstate alone misclassifies tun-type devices (tailscale0 reports
+        # "UNKNOWN", never "UP", despite being fully functional) and the
+        # admin-only IFF_UP flag alone would misclassify a carrier-less bridge
+        # as up (virbr0 has IFF_UP set with no VM running and no carrier). A
+        # link counts as up when the kernel reports it operationally up OR
+        # when it has carrier (LOWER_UP) -- the latter is what actually
+        # matters for "can I use this interface right now".
+        up: (.operstate == "UP" or ((.flags // []) | index("LOWER_UP") != null)),
+        mac: (.address // null),
+        ip4: [ (.addr_info // [])[] | select(.family == "inet" and (.scope // "") != "host")
+               | "\(.local)/\(.prefixlen)" ],
+        ip6: [ (.addr_info // [])[] | select(.family == "inet6" and (.scope // "") == "global")
+               | "\(.local)/\(.prefixlen)" ],
+        is_default: (.ifname == $def)
+      })' <<<"$NET_ADDR_RAW" 2>/dev/null)
+[ -z "$NET_IFACES" ] && NET_IFACES="[]"
+
+# DNS: resolvectl is per-link and line based; empty links are dropped and
+# addresses deduplicated. Falls back to resolv.conf, then to an empty list.
+net_dns() {
+    local out=""
+    if command -v resolvectl >/dev/null 2>&1; then
+        out=$(resolvectl dns 2>/dev/null | sed 's/^[^:]*: *//' | tr ' ' '\n')
+    fi
+    if [ -z "$(tr -d '[:space:]' <<<"${out:-}")" ] && [ -r /etc/resolv.conf ]; then
+        out=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf)
+    fi
+    printf '%s\n' "$out" | awk 'NF && !seen[$0]++'
+}
+# `-n` is required: without it, plain `jq -R` auto-consumes the first input
+# line as the implicit `.` for the filter's first invocation, and `[inputs]`
+# only sees the *remaining* lines -- silently dropping the first resolver (or
+# the only one, yielding `[]` even though a resolver is configured).
+NET_DNS=$(net_dns | jq -Rcn '[inputs] // []' 2>/dev/null)
+[ -z "$NET_DNS" ] && NET_DNS="[]"
+
+NETWORK=$(jq -nc --arg hostname "$NET_HOST" --argjson default "$NET_DEFAULT" \
+                 --argjson dns "$NET_DNS" --argjson interfaces "$NET_IFACES" \
+  '{hostname:$hostname,default:$default,dns:$dns,interfaces:$interfaces}')
+
 # --- Firewall (firewalld, read-only) ------------------------------------------
 # Security note: nothing is written/changed here, only `--list-*` (unprivileged
 # readable) is evaluated. Every error branch (firewalld inactive, firewall-cmd
@@ -155,17 +285,44 @@ WOL=$(wol_json "$WOL_NIC")
 # pattern as gpu/power_extra/remote).
 FW_ZONE=$(cfg_or_detect network.firewall_zone detect_firewall_zone)
 FW_ACTIVE=false
+FW_ALL=""
 if command -v firewall-cmd >/dev/null 2>&1; then
-    FW_STATE=$(firewall-cmd --state 2>/dev/null)
-    [ "$FW_STATE" = "running" ] && FW_ACTIVE=true
+    # ONE call instead of six in the common case. Each firewall-cmd
+    # invocation costs ~0.3 s (D-Bus round trip plus Python startup), and
+    # asking six times made msw-status take ~2 s. `--list-all` returns
+    # interfaces, services, ports and rich rules in a single block, which
+    # is everything read below.
+    FW_ALL=$(firewall-cmd --list-all --zone="$FW_ZONE" 2>/dev/null)
+    if [ -n "$FW_ALL" ]; then
+        FW_ACTIVE=true
+    else
+        # --list-all fails both when firewalld is not running AND when
+        # network.firewall_zone (user-editable config) names a zone that
+        # does not exist -- those are different states, and only the first
+        # one means firewalld is actually down. One extra --state call
+        # disambiguates; it only runs on this already-failed path, so the
+        # happy path stays a single call.
+        [ "$(firewall-cmd --state 2>/dev/null)" = "running" ] && FW_ACTIVE=true
+    fi
 fi
+
+# fw_field <name> -- value of one "  <name>: <value>" line from --list-all.
+# Rich rules are multi-line and handled separately below. When FW_ALL is
+# empty (firewalld active but the configured zone is invalid), every field
+# below is correctly empty too.
+fw_field() {
+    printf '%s\n' "$FW_ALL" | awk -v k="$1" '
+        $0 ~ "^[[:space:]]+" k ":" { sub("^[[:space:]]+" k ":[[:space:]]*", ""); print; exit }'
+}
 
 if [ "$FW_ACTIVE" = true ]; then
     FW_ZONE_J=$(jq -nc --arg z "$FW_ZONE" '$z')
-    FW_PORTS=$(firewall-cmd --zone="$FW_ZONE" --list-ports 2>/dev/null)
-    FW_SERVICES=$(firewall-cmd --zone="$FW_ZONE" --list-services 2>/dev/null)
-    FW_RICH=$(firewall-cmd --zone="$FW_ZONE" --list-rich-rules 2>/dev/null)
-    FW_IFACES_RAW=$(firewall-cmd --zone="$FW_ZONE" --list-interfaces 2>/dev/null)
+    FW_PORTS=$(fw_field "ports")
+    FW_SERVICES=$(fw_field "services")
+    FW_IFACES_RAW=$(fw_field "interfaces")
+    # "rich rules:" opens a block whose entries follow on their own lines
+    # until the end of the output.
+    FW_RICH=$(printf '%s\n' "$FW_ALL" | sed -n '/^[[:space:]]*rich rules:/,$p' | tail -n +2)
     FW_HIGH=$(grep -q '1025-65535/tcp' <<<"$FW_PORTS" && echo true || echo false)
     FW_SSH=$(grep -qw ssh <<<"$FW_SERVICES" && echo true || echo false)
 else
@@ -271,7 +428,12 @@ RDP_INST=$(command -v krdpserver >/dev/null 2>&1 && echo true || (rpm -q krdp >/
 RDP_ACTIVE=$(svc_active_user app-org.kde.krdpserver.service)
 [ "$RDP_ACTIVE" = false ] && RDP_ACTIVE=$(port_active 3389)
 VNC_INST=$( (command -v krfb >/dev/null 2>&1 || command -v wayvnc >/dev/null 2>&1) && echo true || echo false)
-VNC_ACTIVE=$(port_active 5900)
+
+# Ports 5900-5903 are not ours alone: libvirt's SPICE with autoport starts at
+# 5900 too, so once a VM runs, a listener in this range may be a VM console
+# rather than our own VNC server. vnc_socket_json (defined above) ties port
+# and owner to the same socket -- see its comment for why that matters.
+VNC_JSON=$(ss -tlnpH 'sport >= :5900 and sport <= :5903' 2>/dev/null | vnc_socket_json)
 
 # --- Sunshine: installed status (mirrors RDP_INST/VNC_INST above) --------------
 # Sunshine ships either as a native package (binary on PATH) or as a flatpak
@@ -330,13 +492,14 @@ jq -n \
   --argjson ts_active "$TS_ACTIVE" --arg ts_ip4 "$TS_IP4" --arg ts_host "${TS_HOST:-?}" --argjson ts_peers "$TS_PEERS" \
   --argjson kdc_active "$(port_active 1716)" \
   --argjson rdp_inst "$RDP_INST" --argjson rdp_active "$RDP_ACTIVE" \
-  --argjson vnc_inst "$VNC_INST" --argjson vnc_active "$VNC_ACTIVE" \
+  --argjson vnc_inst "$VNC_INST" --argjson vnc "$VNC_JSON" \
   --argjson wol "$WOL" \
   --argjson gpu_present "$GPU_PRESENT" --argjson gpu_awake "$GPU_AWAKE" \
   --arg gpu_dstate "$GPU_DSTATE" --argjson gpu_watts "$GPU_WATTS" --arg gpu_control "$GPU_CONTROL" \
   --arg epp "$EPP" --arg aspm "$ASPM" --arg wifi "$WIFI" --arg bt "$BT" \
   --argjson services "$SERVICES" \
   --argjson firewall "$FIREWALL" \
+  --argjson network "$NETWORK" \
   '{
     mode:$mode,
     perf:{profile:$profile,max_perf_pct:$mpp,turbo:$turbo},
@@ -344,13 +507,14 @@ jq -n \
     gpu:{present:$gpu_present,awake:$gpu_awake,dstate:$gpu_dstate,watts:$gpu_watts,control:$gpu_control},
     power_extra:{epp:$epp,aspm:$aspm,wifi:$wifi,bt:$bt},
     firewall:$firewall,
+    network:$network,
     remote:{
       ssh:{active:$ssh_active,port:22,exposure:$ssh_exp},
       sunshine:{installed:$sun_inst,active:$sun_active,port:47989,exposure:$sun_exp},
       tailscale:{active:$ts_active,ip4:$ts_ip4,host:$ts_host,peers:$ts_peers},
       kdeconnect:{active:$kdc_active,port:1716},
       rdp:{installed:$rdp_inst,active:$rdp_active},
-      vnc:{installed:$vnc_inst,active:$vnc_active},
+      vnc:{installed:$vnc_inst,active:$vnc.active,port:$vnc.port,owner:$vnc.owner},
       wol:$wol
     },
     services:$services

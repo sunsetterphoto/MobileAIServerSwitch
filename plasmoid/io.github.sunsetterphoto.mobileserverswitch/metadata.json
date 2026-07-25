@@ -2,7 +2,7 @@
     "KPackageStructure": "Plasma/Applet",
     "KPlugin": {
         "Id": "io.github.sunsetterphoto.mobileserverswitch",
-        "Name": "Mobile Server Switch",
+        "Name": "Mobile AI Server Switch",
         "Description": "Control and status center for running a laptop as a mobile server: mode, performance/power, remote access, services, firewall",
         "Icon": "network-server",
         "Category": "System Information",

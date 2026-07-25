@@ -17,6 +17,9 @@
     <entry name="showMode" type="Bool">
       <default>true</default>
     </entry>
+    <entry name="showNetwork" type="Bool">
+      <default>true</default>
+    </entry>
     <entry name="showRemote" type="Bool">
       <default>true</default>
     </entry>
@@ -24,6 +27,9 @@
       <default>true</default>
     </entry>
     <entry name="showFirewall" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="showNotes" type="Bool">
       <default>true</default>
     </entry>
   </group>
