@@ -216,12 +216,22 @@ ColumnLayout {
                                           && overviewTab.tailscaleState.ip4 !== "?")
                 text: {
                     var parts = [];
-                    if (netDefault && netDefault.ip4) parts.push(netDefault.ip4);
+                    // netDefault.ip4 comes from the default route's prefsrc,
+                    // which a manually-added default route (`ip route add
+                    // default via ... dev eth0`, no explicit src) can lack
+                    // even though the route -- and thus netDefault itself --
+                    // exists. Falling through to the interface name keeps
+                    // this line from ever rendering as bare "Addresses: "
+                    // with nothing after the colon.
+                    if (netDefault) {
+                        if (netDefault.ip4) parts.push(netDefault.ip4);
+                        else if (netDefault.iface) parts.push(netDefault.iface + " (no address)");
+                    }
                     if (overviewTab.tailscaleState.active === true
                         && overviewTab.tailscaleState.ip4
                         && overviewTab.tailscaleState.ip4 !== "?")
                         parts.push("tailnet " + overviewTab.tailscaleState.ip4);
-                    return "Addresses: " + parts.join(" · ");
+                    return "Addresses: " + (parts.length > 0 ? parts.join(" · ") : "unknown");
                 }
                 opacity: 0.7
                 font: Kirigami.Theme.smallFont
