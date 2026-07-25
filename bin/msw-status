@@ -283,7 +283,26 @@ NETWORK=$(jq -nc --arg hostname "$NET_HOST" --argjson default "$NET_DEFAULT" \
 # readable) is evaluated. Every error branch (firewalld inactive, firewall-cmd
 # missing) still returns valid JSON with sensible defaults, exit stays 0 (same
 # pattern as gpu/power_extra/remote).
-FW_ZONE=$(cfg_or_detect network.firewall_zone detect_firewall_zone)
+#
+# Zone resolution: a PINNED zone (network.firewall_zone set to something
+# other than "auto"/empty in config) is authoritative and unconditionally
+# used to select --zone below, exactly as before. An UNPINNED zone (the
+# shipped config.example.json default) used to cost a whole extra
+# `firewall-cmd --get-default-zone` call (measured ~0.46s, about a quarter of
+# this script's total runtime) just to learn a name that `--list-all`'s own
+# first output line already carries ("ZONE (default, active)" or, for a
+# non-default zone, "ZONE" -- unambiguous either way, since only the first
+# whitespace-delimited token is taken). Omitting --zone makes firewalld pick
+# its own default zone and name it in that same call, so the common case
+# stays at one firewall-cmd invocation instead of two.
+CFG_FW_ZONE=$(msw_cfg network.firewall_zone "auto")
+if [ -z "$CFG_FW_ZONE" ] || [ "$CFG_FW_ZONE" = "auto" ]; then
+    FW_ZONE_PINNED=false
+    FW_ZONE=""
+else
+    FW_ZONE_PINNED=true
+    FW_ZONE="$CFG_FW_ZONE"
+fi
 FW_ACTIVE=false
 FW_ALL=""
 if command -v firewall-cmd >/dev/null 2>&1; then
@@ -292,7 +311,12 @@ if command -v firewall-cmd >/dev/null 2>&1; then
     # asking six times made msw-status take ~2 s. `--list-all` returns
     # interfaces, services, ports and rich rules in a single block, which
     # is everything read below.
-    FW_ALL=$(firewall-cmd --list-all --zone="$FW_ZONE" 2>/dev/null)
+    if [ "$FW_ZONE_PINNED" = true ]; then
+        FW_ALL=$(firewall-cmd --list-all --zone="$FW_ZONE" 2>/dev/null)
+    else
+        FW_ALL=$(firewall-cmd --list-all 2>/dev/null)
+        [ -n "$FW_ALL" ] && FW_ZONE=$(head -n1 <<<"$FW_ALL" | awk '{print $1}')
+    fi
     if [ -n "$FW_ALL" ]; then
         FW_ACTIVE=true
     else
@@ -303,6 +327,16 @@ if command -v firewall-cmd >/dev/null 2>&1; then
         # disambiguates; it only runs on this already-failed path, so the
         # happy path stays a single call.
         [ "$(firewall-cmd --state 2>/dev/null)" = "running" ] && FW_ACTIVE=true
+        # Rare fallback, reached only when BOTH of the above already failed:
+        # zone is unpinned (so nothing named it yet) and firewalld turns out
+        # to be running after all (so --list-all's failure was something
+        # else transient, not "firewalld is down"). Ask --get-default-zone
+        # directly rather than report a blank zone name when firewalld is
+        # in fact up -- this is the one extra call this whole change exists
+        # to avoid on the happy path, kept only for this already-failed one.
+        if [ "$FW_ZONE_PINNED" = false ] && [ "$FW_ACTIVE" = true ] && [ -z "$FW_ZONE" ]; then
+            FW_ZONE=$(detect_firewall_zone)
+        fi
     fi
 fi
 
