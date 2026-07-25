@@ -196,13 +196,58 @@ assert "jq -e '[.network.interfaces[] | select(.is_default)] | length <= 1' >/de
 # straight from a fresh `ip -j addr` call (not from msw-status's source), so
 # it fails loudly if the formula in bin/msw-status regresses, on any machine
 # -- not pinned to this host's interface names or addresses.
+#
+# NOTE on the comparison itself: `$expected[.name] // .up` was tried first and
+# rejected -- jq's `//` treats `false` exactly like null/missing, so whenever
+# an interface is correctly expected to be DOWN, that expression falls back to
+# `.up` and compares the reported value against itself, which can never
+# mismatch. That made the check structurally blind to "should be down,
+# reported up" -- precisely the virbr0 overcorrection the up-formula fix is
+# supposed to guard against. Compare directly instead; a name missing from the
+# $expected map is not a real case (both snapshots come from the same `ip -j
+# addr` universe) and is treated as a loud failure, not silently swallowed.
+NET_UP_FILTER='
+    ($ip | map({key: .ifname, value: (.operstate == "UP" or ((.flags // []) | index("LOWER_UP") != null))}) | from_entries) as $expected
+    | [ $net[] | . as $iface
+        | if ($expected | has($iface.name) | not)
+          then $iface.name                          # not in the ip -j addr snapshot at all -> fail loudly
+          elif $iface.up != $expected[$iface.name]
+          then $iface.name                           # formula mismatch, in either direction
+          else empty end
+      ]
+    | length'
+
 IP_ADDR_JSON=$(ip -j addr 2>/dev/null)
 [ -z "$IP_ADDR_JSON" ] && IP_ADDR_JSON="[]"
-NET_UP_MISMATCHES=$(jq -n --argjson net "$(jq -c '.network.interfaces' <<<"$J")" --argjson ip "$IP_ADDR_JSON" '
-    ($ip | map({key: .ifname, value: (.operstate == "UP" or ((.flags // []) | index("LOWER_UP") != null))}) | from_entries) as $expected
-    | [ $net[] | select(.up != ($expected[.name] // .up)) | .name ]
-    | length')
+NET_UP_MISMATCHES=$(jq -n --argjson net "$(jq -c '.network.interfaces' <<<"$J")" --argjson ip "$IP_ADDR_JSON" "$NET_UP_FILTER")
 assert "[ \"$NET_UP_MISMATCHES\" = 0 ]" \
        "every interface's up matches operstate==UP or LOWER_UP in flags, recomputed independently (mismatches: $NET_UP_MISMATCHES)"
+
+# Prove the check above is actually load-bearing in BOTH directions, using
+# fabricated snapshots so this does not depend on today's host happening to
+# have both an up and a down interface in the right shape. Reuses the exact
+# same filter text ($NET_UP_FILTER) so there is no risk of the unit test and
+# the live check drifting apart.
+(
+    # Case A: should be DOWN (operstate DOWN, no LOWER_UP) but msw-status
+    # reports up:true -- the virbr0-overcorrection shape. Must be caught.
+    N=$(jq -n --argjson net '[{"name":"fakebr","up":true}]' \
+              --argjson ip  '[{"ifname":"fakebr","operstate":"DOWN","flags":["BROADCAST"]}]' \
+              "$NET_UP_FILTER")
+    assert_eq "$N" "1" "up-check catches: should-be-down interface reported up (virbr0 direction)"
+
+    # Case B: should be UP (LOWER_UP present, operstate UNKNOWN, the
+    # tailscale0 shape) but msw-status reports up:false. Must be caught.
+    N=$(jq -n --argjson net '[{"name":"faketail","up":false}]' \
+              --argjson ip  '[{"ifname":"faketail","operstate":"UNKNOWN","flags":["POINTOPOINT","LOWER_UP"]}]' \
+              "$NET_UP_FILTER")
+    assert_eq "$N" "1" "up-check catches: should-be-up interface reported down (tailscale0 direction)"
+
+    # Case C: both correctly reported -> no false positives.
+    N=$(jq -n --argjson net '[{"name":"a","up":true},{"name":"b","up":false}]' \
+              --argjson ip  '[{"ifname":"a","operstate":"UP","flags":[]},{"ifname":"b","operstate":"DOWN","flags":[]}]' \
+              "$NET_UP_FILTER")
+    assert_eq "$N" "0" "up-check: correctly-reported interfaces in both directions produce no mismatch"
+) || exit 1
 
 pass
