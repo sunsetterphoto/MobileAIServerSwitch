@@ -78,7 +78,8 @@ PlasmoidItem {
                             && status.power.battery !== null) ? status.power.battery : -1
 
     // Performance axis: feeds PerformanceTab (presets/slider/turbo display).
-    property string perfProfile: (status.perf && status.perf.profile) ? status.perf.profile : "?"
+    property string perfProfile: (status.perf && status.perf.profile !== undefined
+                                   && status.perf.profile !== null) ? status.perf.profile : "?"
     property int maxPerfPct: (status.perf && status.perf.max_perf_pct !== undefined
                                && status.perf.max_perf_pct !== null) ? status.perf.max_perf_pct : 100
     property bool turbo: (status.perf && status.perf.turbo !== undefined) ? status.perf.turbo : true
