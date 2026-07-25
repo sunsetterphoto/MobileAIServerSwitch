@@ -1,5 +1,5 @@
 {
-  "_comment": "Example config for Mobile Server Switch. Copy this file to ~/.config/mobileserverswitch/config.json and edit it there -- this file itself is never read by the CLIs. Any section/key you omit falls back to its default (usually \"auto\" = runtime auto-detection). Remove this _comment key in your own copy if you like; it is ignored by the CLIs either way.",
+  "_comment": "Example config for Mobile AI Server Switch. Copy this file to ~/.config/mobileserverswitch/config.json and edit it there -- this file itself is never read by the CLIs. Any section/key you omit falls back to its default (usually \"auto\" = runtime auto-detection). Remove this _comment key in your own copy if you like; it is ignored by the CLIs either way.",
 
   "network": {
     "_comment": "\"auto\" runs live detection on every read. Only override a value here if detection picks the wrong interface/zone on your system.",

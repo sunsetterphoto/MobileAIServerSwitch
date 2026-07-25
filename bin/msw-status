@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# msw-status --json : aggregated Mobile Server Switch state as JSON (read-only).
+# msw-status --json : aggregated Mobile AI Server Switch state as JSON (read-only).
 # Single-source-of-truth interface between the CLIs and the plasmoid.
 set -uo pipefail
 

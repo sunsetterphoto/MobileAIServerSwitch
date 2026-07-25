@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# msw-mode — operating-mode switch for Mobile Server Switch
+# msw-mode — operating-mode switch for Mobile AI Server Switch
 #
 #   msw-mode server   permanent operation / remote-desktop server (default)
 #   msw-mode laptop   mobile normal operation
