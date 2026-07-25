@@ -2,7 +2,19 @@
 # msw-notes — read and write the user's notes file.
 #
 #   msw-notes path                    print the notes file location
-#   msw-notes read                    print the content (missing file -> empty)
+#   msw-notes read                    print the content; missing file -> exits 0
+#                                      with no output. A file that EXISTS but
+#                                      cannot be read (permissions, or a
+#                                      directory sitting at the notes path) is
+#                                      NOT the same as missing -> message on
+#                                      stderr, exit 1, nothing on stdout. On
+#                                      either exit-0 outcome (content or
+#                                      missing) also prints "MTIME:<epoch>" to
+#                                      stderr -- the mtime read in THIS SAME
+#                                      invocation, immediately before the
+#                                      content -- so a caller never needs a
+#                                      second, separate `mtime` call that could
+#                                      itself race an external writer.
 #   msw-notes mtime                   modification time in epoch seconds (missing -> 0)
 #   msw-notes write --base64 <data>   write atomically, mode 600; prints the
 #                                      new mtime (epoch seconds) on success
@@ -24,7 +36,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 # Tests override MSW_NOTES_FILE to avoid touching the real notes.
 NOTES_FILE="${MSW_NOTES_FILE:-$(_msw_config_home)/.config/mobileserverswitch/notes.md}"
 
-usage() { sed -n '3,8p' "$0" | sed 's/^# \?//'; }
+usage() { sed -n '3,20p' "$0" | sed 's/^# \?//'; }
 
 case "${1:-}" in
     path)
@@ -33,7 +45,54 @@ case "${1:-}" in
         ;;
     read)
         [ $# -eq 1 ] || { echo "read takes no argument" >&2; exit 2; }
-        [ -r "$NOTES_FILE" ] && cat "$NOTES_FILE"
+        if [ ! -e "$NOTES_FILE" ]; then
+            # Genuinely absent: this is the only case that is allowed to look
+            # like an empty file. Still report a mtime (0, matching `mtime`'s
+            # own missing-file value) so a caller building loadedMtime from
+            # this single invocation has one to adopt.
+            echo "MTIME:0" >&2
+            exit 0
+        fi
+        if [ -d "$NOTES_FILE" ]; then
+            # A directory at the notes path is unreadable-as-notes for the
+            # same reason a permission-denied file is: `cat` would fail, and
+            # silently treating that as "empty" would let a save overwrite
+            # whatever is really there (nothing, in this case, but the
+            # failure mode is identical to the permissions case below, so it
+            # gets the same treatment).
+            echo "read: $NOTES_FILE is a directory, not a file" >&2
+            exit 1
+        fi
+        if [ ! -r "$NOTES_FILE" ]; then
+            # Present but unreadable (e.g. mode 000 after a `sudo $EDITOR`
+            # over SSH) MUST NOT look like "missing" -- that was exactly the
+            # bug: an unreadable file read as "" with exit 0, the widget
+            # showed an empty pad, the user typed into it, and the next
+            # autosave's freshness check (which only ever compares mtimes)
+            # saw no conflict and overwrote real content with the new text.
+            # `mv -f` in `write` only needs directory write permission, not
+            # file read permission, so nothing below this line would have
+            # stopped it.
+            echo "read: $NOTES_FILE exists but is not readable" >&2
+            exit 1
+        fi
+        # Mtime BEFORE content, in that order, deliberately: if an external
+        # writer lands between these two lines, this call then reports an
+        # mtime that is OLDER than the content it goes on to print. A caller
+        # comparing that (stale) mtime against a later, fresh mtime check
+        # will see a mismatch and refuse to save (a spurious conflict banner)
+        # -- safe. The reverse order (content, then mtime) would instead
+        # report a mtime that matches the external write while holding the
+        # content from before it, so a subsequent autosave would see no
+        # conflict and silently overwrite the external edit -- the same
+        # failure this whole guard exists to prevent.
+        mtime=$(stat -c '%Y' "$NOTES_FILE") || {
+            echo "read: cannot stat $NOTES_FILE" >&2; exit 1; }
+        if ! cat "$NOTES_FILE"; then
+            echo "read: cannot read $NOTES_FILE" >&2
+            exit 1
+        fi
+        echo "MTIME:$mtime" >&2
         exit 0
         ;;
     mtime)

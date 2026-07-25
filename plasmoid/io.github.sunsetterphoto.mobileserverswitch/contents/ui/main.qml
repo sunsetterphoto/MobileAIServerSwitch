@@ -223,8 +223,24 @@ PlasmoidItem {
     // Notes are user data, not machine state: they are deliberately NOT part
     // of msw-status (that JSON gets handed around and will be served over an
     // API), and the 5 s poll would fight the user's typing. Loaded on demand.
+    //
+    // `msw-notes read` exits non-zero (and prints nothing to stdout) when the
+    // file EXISTS but could not be read -- a permission problem, or a
+    // directory at the notes path -- as opposed to exit 0 with empty stdout
+    // for a genuinely missing file. The two must never be conflated: treating
+    // "unreadable" as "empty" is exactly the bug this distinction exists to
+    // prevent (see NotesTab.qml's loadFailed handling). On success (exit 0,
+    // whether content or genuinely missing) `read` also prints
+    // "MTIME:<epoch>" to stderr, read in that SAME invocation immediately
+    // before the content -- cb's mtime therefore never comes from a second,
+    // separate round trip that could itself race an external writer. cb
+    // receives (text, code, mtimeOrMinus1).
     function notesLoad(cb) {
-        exec.run(notesTool + " read", function(out, err, code) { cb(code === 0 ? out : "", code); });
+        exec.run(notesTool + " read", function(out, err, code) {
+            if (code !== 0) { cb("", code, -1); return; }
+            var m = /MTIME:(\d+)/.exec(err);
+            cb(out, code, m ? parseInt(m[1], 10) : -1);
+        });
     }
     function notesMtime(cb) {
         exec.run(notesTool + " mtime", function(out, err, code) {
