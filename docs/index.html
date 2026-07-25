@@ -298,7 +298,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
         </div>
         <h3>Performance</h3>
-        <p>Power saver / balanced / performance presets via KDE PowerProfiles, plus a fine CPU-cap slider, dGPU runtime power management, WiFi/Bluetooth radios and Energy Performance Preference.</p>
+        <p>Power saver / balanced / performance presets via KDE PowerProfiles, plus a fine CPU-cap slider, dGPU runtime power management and the WiFi/Bluetooth radios.</p>
       </div>
       <div class="card">
         <div class="icon" aria-hidden="true">
@@ -306,6 +306,13 @@
         </div>
         <h3>Mode</h3>
         <p>Server ⇄ Laptop switch. Server mode favors uptime; switching back to Laptop stops configured server services after a confirmation.</p>
+      </div>
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>
+        </div>
+        <h3>Network</h3>
+        <p>How the machine is reachable right now: hostname, the default-route interface and gateway, active DNS resolvers, and every interface with its IPv4/IPv6 addresses (selectable, so they can be copied). Virtual interfaces sort last and are labelled as such.</p>
       </div>
       <div class="card">
         <div class="icon" aria-hidden="true">
@@ -327,6 +334,13 @@
         </div>
         <h3>Firewall</h3>
         <p>firewalld status at a glance plus targeted LAN-only blocks for configured apps. SSH stays allowed and the Tailnet is never affected — always.</p>
+      </div>
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
+        </div>
+        <h3>Notes</h3>
+        <p>A scratchpad for what matters about this machine, stored as a plain file (mode 600) so it stays editable over SSH with any editor. Saves are debounced; if the file changed outside the widget, an automatic save is suppressed and you are asked instead — an automatic action never overwrites someone else's edit.</p>
       </div>
     </div>
   </section>

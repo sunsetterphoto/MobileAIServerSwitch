@@ -48,7 +48,7 @@ capture.
 
 | Tab | What it shows / does |
 |---|---|
-| **Overview** | Compact read-only summary: mode, performance preset, dGPU power draw, battery/AC, Tailnet IP, SSH/remote-desktop status, active services, Wake-on-LAN. Sections jump to their detail tab on click. |
+| **Overview** | Compact read-only summary: mode, performance preset, dGPU power draw, battery/AC, an Addresses line (primary + Tailnet address), SSH/remote-desktop status, active services, Wake-on-LAN. Sections jump to their detail tab on click. |
 | **Performance** | Three presets (power saver / balanced / performance) via KDE's PowerProfiles (`org.freedesktop.UPower.PowerProfiles`) plus a fine CPU-cap slider (`intel_pstate/max_perf_pct`, 16-100%, turbo on/off). Also: dGPU runtime power management and the WiFi/Bluetooth radios. |
 | **Mode** | Server ⇄ Laptop switch. Server mode favors uninterrupted uptime (screen lock/suspend behavior, charging, background services); switching back to Laptop stops the configured server services and asks for confirmation first. |
 | **Network** | How the machine is reachable right now: hostname, which interface carries the default route and via which gateway, the active DNS resolvers, and every interface with its IPv4/IPv6 addresses (selectable, so they can be copied). Virtual interfaces sort last and are labelled as such, so a bridge is not mistaken for a way in. |
@@ -157,6 +157,7 @@ bin/msw-perf                  performance: 3 presets (D-Bus PowerProfiles) + fin
 bin/msw-power                 power switches: dGPU / WiFi / Bluetooth / EPP / WoL
 bin/msw-firewall              LAN blocks per app (firewalld, single zone)
 bin/msw-krdp-setup            generates the KRDP live override from a template (password stays local)
+bin/msw-notes                 read/write the Notes-tab scratchpad file (plain file, never msw-status)
 bin/msw-config                shared config-reader + auto-detection helpers (sourced, not run directly)
 system/usr-local-sbin/        privileged helpers: msw-charge-apply / -perf-apply / -power-apply / -firewall-apply (fixed whitelists)
 system/systemd/               msw-charge-thresholds.service (charge thresholds at boot, opt-in)
