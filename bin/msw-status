@@ -181,7 +181,14 @@ NET_IFACES=$(jq -c --arg def "$NET_DEFAULT_IFACE" '
           elif (.ifname | test("^wl")) then "wifi"
           elif (.link_type == "ether") then "ether"
           else "other" end),
-        up: (.operstate == "UP"),
+        # operstate alone misclassifies tun-type devices (tailscale0 reports
+        # "UNKNOWN", never "UP", despite being fully functional) and the
+        # admin-only IFF_UP flag alone would misclassify a carrier-less bridge
+        # as up (virbr0 has IFF_UP set with no VM running and no carrier). A
+        # link counts as up when the kernel reports it operationally up OR
+        # when it has carrier (LOWER_UP) -- the latter is what actually
+        # matters for "can I use this interface right now".
+        up: (.operstate == "UP" or ((.flags // []) | index("LOWER_UP") != null)),
         mac: (.address // null),
         ip4: [ (.addr_info // [])[] | select(.family == "inet" and (.scope // "") != "host")
                | "\(.local)/\(.prefixlen)" ],
@@ -203,7 +210,11 @@ net_dns() {
     fi
     printf '%s\n' "$out" | awk 'NF && !seen[$0]++'
 }
-NET_DNS=$(net_dns | jq -Rc '[inputs] // []' 2>/dev/null)
+# `-n` is required: without it, plain `jq -R` auto-consumes the first input
+# line as the implicit `.` for the filter's first invocation, and `[inputs]`
+# only sees the *remaining* lines -- silently dropping the first resolver (or
+# the only one, yielding `[]` even though a resolver is configured).
+NET_DNS=$(net_dns | jq -Rcn '[inputs] // []' 2>/dev/null)
 [ -z "$NET_DNS" ] && NET_DNS="[]"
 
 NETWORK=$(jq -nc --arg hostname "$NET_HOST" --argjson default "$NET_DEFAULT" \

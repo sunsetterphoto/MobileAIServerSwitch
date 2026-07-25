@@ -163,4 +163,46 @@ assert "jq -e '.network.interfaces | map(select(.name == \"lo\")) | length == 0'
 assert "jq -e '[.network.interfaces[] | select(.is_default)] | length <= 1' >/dev/null <<<\"\$J\"" \
        "at most one interface is flagged default"
 
+# --- network.dns: content, not just shape ---------------------------------
+# Regression test for a real bug: `net_dns | jq -Rc '[inputs]'` (missing -n)
+# silently drops the first resolver line -- on a host with exactly one
+# resolver that means an empty array even though DNS is configured and
+# net_dns() itself detects it correctly. Extracts the real net_dns() function
+# from the shipped CLI (same pattern as the exposure_for_port extraction
+# above) so this exercises the real code, not a reimplementation, and stays
+# portable: hosts with no resolver at all skip the content assertion instead
+# of failing.
+(
+    eval "$(sed -n '/^net_dns() {/,/^}/p' bin/msw-status)"
+    EXPECTED_DNS=$(net_dns)
+    if [ -n "$EXPECTED_DNS" ]; then
+        assert "jq -e '.network.dns | length > 0' >/dev/null <<<\"\$J\"" \
+               "network.dns is non-empty (host has at least one resolver)"
+        while IFS= read -r resolver; do
+            [ -z "$resolver" ] && continue
+            assert "jq -e --arg r \"$resolver\" '.network.dns | index(\$r) != null' >/dev/null <<<\"\$J\"" \
+                   "network.dns contains resolver $resolver"
+        done <<< "$EXPECTED_DNS"
+    else
+        echo "  (skipping network.dns content check: no resolver detected on this host)"
+    fi
+) || exit 1
+
+# --- network.interfaces[].up: recomputed independently from `ip -j addr` ---
+# Regression test for a real bug: `up: (.operstate == "UP")` alone
+# misclassified tailscale0 (and any tun-type device) as down -- those report
+# operstate "UNKNOWN", never "UP", despite being fully usable. The fix adds
+# an OR on carrier (LOWER_UP in flags). This recomputes the expected value
+# straight from a fresh `ip -j addr` call (not from msw-status's source), so
+# it fails loudly if the formula in bin/msw-status regresses, on any machine
+# -- not pinned to this host's interface names or addresses.
+IP_ADDR_JSON=$(ip -j addr 2>/dev/null)
+[ -z "$IP_ADDR_JSON" ] && IP_ADDR_JSON="[]"
+NET_UP_MISMATCHES=$(jq -n --argjson net "$(jq -c '.network.interfaces' <<<"$J")" --argjson ip "$IP_ADDR_JSON" '
+    ($ip | map({key: .ifname, value: (.operstate == "UP" or ((.flags // []) | index("LOWER_UP") != null))}) | from_entries) as $expected
+    | [ $net[] | select(.up != ($expected[.name] // .up)) | .name ]
+    | length')
+assert "[ \"$NET_UP_MISMATCHES\" = 0 ]" \
+       "every interface's up matches operstate==UP or LOWER_UP in flags, recomputed independently (mismatches: $NET_UP_MISMATCHES)"
+
 pass
