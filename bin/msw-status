@@ -40,6 +40,55 @@ exposure_for_port() {  # $1 = port ; echo "localhost" | "Tailnet" | "LAN" | "LAN
 
 port_active() { ss -tlnH "sport = :$1" 2>/dev/null | grep -q . && echo true || echo false; }
 
+# --- vnc_socket_json: who holds a range of ports, port and owner from the SAME
+#     socket -------------------------------------------------------------------
+# Reads `ss -tlnpH` lines on stdin (already filtered to the port range of
+# interest) and emits {"active":bool,"port":num|null,"owner":string|null}.
+#
+# `ss -tlnp` names the process for sockets owned by the invoking user and
+# stays silent for anyone else's -- that asymmetry needs no privileges and is
+# what tells our own krfb apart from a foreign listener (in practice a VM
+# console: libvirt's SPICE with autoport starts at 5900 too).
+#
+# port and owner MUST come from the same input line. An earlier version
+# computed them as two independent reductions over the whole input (numeric
+# minimum port across all lines; owner from the first line with a `users:((`
+# match) -- with a foreign listener on :5900 and krfb on :5901, that
+# misattributed krfb's name to the foreign port, exactly the false claim this
+# feature exists to eliminate. Building one "port owner" row per line first,
+# then sorting, keeps each pair tied to its socket.
+vnc_socket_json() {
+    local lines rows row port owner
+    lines=$(cat)
+    if [ -z "$lines" ]; then
+        jq -nc '{active:false,port:null,owner:null}'
+        return
+    fi
+    rows=$(
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            port=$(awk '{ n=split($4,a,":"); print a[n] }' <<<"$line")
+            [[ "$port" =~ ^[0-9]+$ ]] || continue
+            owner=$(grep -o 'users:(("[^"]*"' <<<"$line" | head -1 | sed 's/.*(("//;s/"$//')
+            printf '%s %s\n' "$port" "${owner:--}"
+        done <<< "$lines" | sort -n -k1,1
+    )
+    row=$(head -1 <<<"$rows")
+    if [ -z "$row" ]; then
+        # Something was listening (stdin was non-empty) but its local-address
+        # field did not parse as expected -- report active without guessing.
+        jq -nc '{active:true,port:null,owner:null}'
+        return
+    fi
+    port=$(awk '{print $1}' <<<"$row")
+    owner=$(awk '{print $2}' <<<"$row")
+    if [ "$owner" = "-" ]; then
+        jq -nc --argjson port "$port" '{active:true,port:$port,owner:null}'
+    else
+        jq -nc --argjson port "$port" --arg owner "$owner" '{active:true,port:$port,owner:$owner}'
+    fi
+}
+
 svc_active_user()   { systemctl --user is-active "$1" 2>/dev/null | grep -qx active && echo true || echo false; }
 svc_active_system() { systemctl is-active "$1" 2>/dev/null | grep -qx active && echo true || echo false; }
 
@@ -380,27 +429,11 @@ RDP_ACTIVE=$(svc_active_user app-org.kde.krdpserver.service)
 [ "$RDP_ACTIVE" = false ] && RDP_ACTIVE=$(port_active 3389)
 VNC_INST=$( (command -v krfb >/dev/null 2>&1 || command -v wayvnc >/dev/null 2>&1) && echo true || echo false)
 
-# Who holds 5900-5903? `ss -tlnp` names the process for sockets owned by the
-# invoking user and stays silent for anyone else's -- that asymmetry is the
-# whole trick, and it needs no privileges. A listener without a name is
-# therefore a foreign one, in practice a VM console: libvirt's SPICE with
-# autoport starts at 5900 too, so this range is not ours alone.
-VNC_LINES=$(ss -tlnpH 'sport >= :5900 and sport <= :5903' 2>/dev/null)
-if [ -n "$VNC_LINES" ]; then
-    VNC_ACTIVE=true
-    VNC_PORT=$(awk '{ n=split($4,a,":"); print a[n] }' <<<"$VNC_LINES" | sort -n | head -1)
-    [[ "$VNC_PORT" =~ ^[0-9]+$ ]] || VNC_PORT=null
-    VNC_OWNER=$(grep -o 'users:(("[^"]*"' <<<"$VNC_LINES" | head -1 | sed 's/.*(("//;s/"$//')
-else
-    VNC_ACTIVE=false
-    VNC_PORT=null
-    VNC_OWNER=""
-fi
-if [ -n "$VNC_OWNER" ]; then
-    VNC_OWNER_J=$(jq -nc --arg o "$VNC_OWNER" '$o')
-else
-    VNC_OWNER_J=null
-fi
+# Ports 5900-5903 are not ours alone: libvirt's SPICE with autoport starts at
+# 5900 too, so once a VM runs, a listener in this range may be a VM console
+# rather than our own VNC server. vnc_socket_json (defined above) ties port
+# and owner to the same socket -- see its comment for why that matters.
+VNC_JSON=$(ss -tlnpH 'sport >= :5900 and sport <= :5903' 2>/dev/null | vnc_socket_json)
 
 # --- Sunshine: installed status (mirrors RDP_INST/VNC_INST above) --------------
 # Sunshine ships either as a native package (binary on PATH) or as a flatpak
@@ -459,8 +492,7 @@ jq -n \
   --argjson ts_active "$TS_ACTIVE" --arg ts_ip4 "$TS_IP4" --arg ts_host "${TS_HOST:-?}" --argjson ts_peers "$TS_PEERS" \
   --argjson kdc_active "$(port_active 1716)" \
   --argjson rdp_inst "$RDP_INST" --argjson rdp_active "$RDP_ACTIVE" \
-  --argjson vnc_inst "$VNC_INST" --argjson vnc_active "$VNC_ACTIVE" \
-  --argjson vnc_port "$VNC_PORT" --argjson vnc_owner "$VNC_OWNER_J" \
+  --argjson vnc_inst "$VNC_INST" --argjson vnc "$VNC_JSON" \
   --argjson wol "$WOL" \
   --argjson gpu_present "$GPU_PRESENT" --argjson gpu_awake "$GPU_AWAKE" \
   --arg gpu_dstate "$GPU_DSTATE" --argjson gpu_watts "$GPU_WATTS" --arg gpu_control "$GPU_CONTROL" \
@@ -482,7 +514,7 @@ jq -n \
       tailscale:{active:$ts_active,ip4:$ts_ip4,host:$ts_host,peers:$ts_peers},
       kdeconnect:{active:$kdc_active,port:1716},
       rdp:{installed:$rdp_inst,active:$rdp_active},
-      vnc:{installed:$vnc_inst,active:$vnc_active,port:$vnc_port,owner:$vnc_owner},
+      vnc:{installed:$vnc_inst,active:$vnc.active,port:$vnc.port,owner:$vnc.owner},
       wol:$wol
     },
     services:$services

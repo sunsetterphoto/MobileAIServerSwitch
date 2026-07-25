@@ -329,4 +329,50 @@ assert "jq -e '.remote.vnc.active == false or (.remote.vnc.port | type == \"numb
 assert "jq -e '.remote.vnc.active or (.remote.vnc.owner == null)' >/dev/null <<<\"\$J\"" \
        "an inactive vnc has no owner"
 
+# --- vnc_socket_json: unit test with fabricated `ss` lines ---------------------
+# Regression coverage for a real bug: port and owner used to be two
+# independent reductions over the same input (numeric-minimum port across all
+# lines; owner from the first line with a `users:((` match), so a foreign
+# listener on the lowest port plus an owned krfb listener on a higher port in
+# the same range produced port=<foreign> owner=krfb -- attributing krfb's
+# name to a socket it does not hold. krfb + a VM's SPICE both landing in
+# 5900-5903 is not exotic; it is the motivating case for this whole feature.
+# The function is extracted from the shipped CLI (same pattern as
+# exposure_for_port above), so this exercises the real code, not a copy, and
+# does not depend on this host's live listeners.
+(
+    eval "$(sed -n '/^vnc_socket_json() {/,/^}/p' bin/msw-status)"
+    vnc_of() { printf '%s' "$1" | vnc_socket_json; }
+
+    R=$(vnc_of "")
+    assert_eq "$(jq -r '.active' <<<"$R")" "false" "vnc: nothing listening -> active false"
+    assert_eq "$(jq -r '.port'   <<<"$R")" "null"  "vnc: nothing listening -> port null"
+    assert_eq "$(jq -r '.owner'  <<<"$R")" "null"  "vnc: nothing listening -> owner null"
+
+    R=$(vnc_of 'LISTEN 0 128 127.0.0.1:5900 0.0.0.0:* users:(("krfb",pid=1,fd=1))')
+    assert_eq "$(jq -r '.active' <<<"$R")" "true"  "vnc: one owned listener -> active true"
+    assert_eq "$(jq -r '.port'   <<<"$R")" "5900"  "vnc: one owned listener -> port matches"
+    assert_eq "$(jq -r '.owner'  <<<"$R")" "krfb"  "vnc: one owned listener -> owner matches"
+
+    R=$(vnc_of 'LISTEN 0 128 127.0.0.1:5901 0.0.0.0:*')
+    assert_eq "$(jq -r '.active' <<<"$R")" "true"  "vnc: one foreign listener -> active true"
+    assert_eq "$(jq -r '.port'   <<<"$R")" "5901"  "vnc: one foreign listener -> port set"
+    assert_eq "$(jq -r '.owner'  <<<"$R")" "null"  "vnc: one foreign listener (no users:(() -> owner null"
+
+    # THE REGRESSION CASE: foreign listener on the LOWER port (5900) plus a
+    # krfb-owned listener on a HIGHER port (5901) in the same range. Port and
+    # owner must describe the SAME socket: since the reported port is the
+    # foreign one (5900, the lowest), owner must be null -- NOT "krfb", which
+    # actually sits on 5901.
+    LINES=$'LISTEN 0 128 127.0.0.1:5900 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:5901 0.0.0.0:* users:(("krfb",pid=1,fd=1))'
+    R=$(vnc_of "$LINES")
+    assert_eq "$(jq -r '.port'  <<<"$R")" "5900" "vnc regression: reports the lower port (foreign, 5900)"
+    assert_eq "$(jq -r '.owner' <<<"$R")" "null" "vnc regression: does NOT attribute krfb (really on 5901) to the foreign port 5900"
+
+    R=$(vnc_of 'LISTEN 0 128 [::1]:5900 [::]:* users:(("krfb",pid=1,fd=1))')
+    assert_eq "$(jq -r '.active' <<<"$R")" "true"  "vnc: IPv6 listener -> active true"
+    assert_eq "$(jq -r '.port'   <<<"$R")" "5900"  "vnc: IPv6 listener -> port parsed correctly"
+    assert_eq "$(jq -r '.owner'  <<<"$R")" "krfb"  "vnc: IPv6 listener -> owner matches"
+) || exit 1
+
 pass
