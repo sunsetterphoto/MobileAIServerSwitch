@@ -140,6 +140,8 @@ PlasmoidItem {
         connectedSources: []
         // Callbacks per source command; disconnected again after the reply.
         property var callbacks: ({})
+        // Disambiguates concurrent calls (see run() below).
+        property int seq: 0
 
         onNewData: (source, data) => {
             var cb = callbacks[source];
@@ -149,8 +151,20 @@ PlasmoidItem {
             }
             disconnectSource(source);
         }
+        // The engine keys/deduplicates sources by their literal command
+        // string, and callbacks[] above does the same -- so two concurrent
+        // run() calls for the SAME argument-less command (e.g. "msw-notes
+        // mtime", issued from more than one place in NotesTab.qml within a
+        // short window) would collide: the second connectSource() call
+        // overwrites the first callback before its reply arrives, and the
+        // engine drops the duplicate source. Appending a trailing shell
+        // comment with an incrementing counter makes every invocation's
+        // source string unique -- it changes nothing about what actually
+        // runs (a "# N" comment is inert to /bin/sh) -- so no two in-flight
+        // calls can ever collide, no matter how many callers overlap.
         function run(cmd, cb) {
-            var full = root.pathPrefix + cmd;
+            exec.seq++;
+            var full = root.pathPrefix + cmd + "  # " + exec.seq;
             if (cb)
                 callbacks[full] = cb;
             connectSource(full);
@@ -217,9 +231,17 @@ PlasmoidItem {
             cb(code === 0 ? parseInt(out.trim(), 10) || 0 : -1);
         });
     }
+    // msw-notes write prints the mtime it just set (part of the SAME
+    // invocation that wrote the file) so the caller can adopt it directly
+    // instead of issuing a second, separate "mtime" call afterwards -- a
+    // second call would leave a window in which an external writer could
+    // land and get silently mistaken for our own write. cb receives
+    // (exitCode, mtimeOrMinus1).
     function notesSave(text, cb) {
         var b64 = Qt.btoa(unescape(encodeURIComponent(text)));
-        exec.run(notesTool + " write --base64 '" + b64 + "'", function(out, err, code) { cb(code); });
+        exec.run(notesTool + " write --base64 '" + b64 + "'", function(out, err, code) {
+            cb(code, code === 0 ? (parseInt(out.trim(), 10) || 0) : -1);
+        });
     }
 
     // --- Settings persistence (config.json writer) ----------------------------

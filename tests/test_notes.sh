@@ -46,6 +46,16 @@ assert_eq "$(run write --base64)"        "2" "write with a missing value -> exit
 assert_eq "$(run write --base64 'not!base64!')" "2" "invalid base64 -> exit 2"
 assert_eq "$($CLI read)" "changed"       "a rejected write left the file untouched"
 
+# --- write prints the mtime it just set (no second round trip needed) ---------
+# This is what the plasmoid's conflict guard relies on: adopting the mtime
+# from write's own stdout instead of issuing a separate `mtime` call closes
+# the race window where an external writer could land between the two calls
+# and get silently mistaken for "our" write.
+W_OUT=$($CLI write --base64 "$(b64 "printed mtime")")
+assert "echo \"$W_OUT\" | grep -qE '^[0-9]+\$'" "write prints a single numeric mtime line"
+assert_eq "$W_OUT" "$($CLI mtime)" "the mtime write prints matches a fresh mtime call"
+assert_eq "$($CLI read)" "printed mtime" "content from the mtime-printing write round-trips"
+
 # --- unicode ------------------------------------------------------------------
 U='Grüße 🚀 日本語'
 $CLI write --base64 "$(b64 "$U")" >/dev/null
