@@ -260,6 +260,13 @@ NET_UP_CHECKED=$(jq -r '.checked' <<<"$NET_UP_RESULT")
 NET_UP_SKIPPED=$(jq -r '.skipped' <<<"$NET_UP_RESULT")
 NET_UP_MISMATCHES=$(jq -r '.mismatches | length' <<<"$NET_UP_RESULT")
 echo "  (network.interfaces[].up: checked $NET_UP_CHECKED stable interface(s) across the pre/post read, skipped $NET_UP_SKIPPED unstable)"
+# A skip-everything run must not pass quietly: if every interface were unstable
+# across the window, `mismatches` would be trivially empty and the assertion
+# below would pass having verified nothing -- with only an `echo` as a trace
+# that no CI and no reader scanning for FAIL would catch. Assert that the live
+# check actually checked something, loudly, as its own assertion.
+assert "[ \"$NET_UP_CHECKED\" -gt 0 ]" \
+       "network.interfaces[].up live check verified at least one stable interface (checked=$NET_UP_CHECKED skipped=$NET_UP_SKIPPED)"
 assert "[ \"$NET_UP_MISMATCHES\" = 0 ]" \
        "every stable interface's up matches operstate==UP or LOWER_UP in flags (checked=$NET_UP_CHECKED skipped=$NET_UP_SKIPPED mismatches=$NET_UP_MISMATCHES)"
 
@@ -288,6 +295,30 @@ assert "[ \"$NET_UP_MISMATCHES\" = 0 ]" \
               --argjson ip  '[{"ifname":"a","operstate":"UP","flags":[]},{"ifname":"b","operstate":"DOWN","flags":[]}]' \
               "$NET_UP_FILTER")
     assert_eq "$N" "0" "up-check: correctly-reported interfaces in both directions produce no mismatch"
+) || exit 1
+
+# --- network.interfaces[].kind: deterministic classifier unit test ---------
+# Pins the fix round-2 "br0" fix: `test("^(virbr|docker|podman|cni-|veth|br-)")`
+# only matched Docker's `br-<hash>` bridges and let a hand-made `br0`-style
+# bridge (the conventional name on a VM host, which this project targets) fall
+# through and be presented as a physical link. Fixed to `br[0-9-]`. Mirrors the
+# classifier in bin/msw-status (keep in sync if that regex changes) and, unlike
+# the live host check above, is fully deterministic -- not dependent on this
+# machine happening to have a br0-shaped interface -- so the fix cannot
+# regress silently.
+NET_KIND_FILTER='
+    if   ($ifname | startswith("tailscale")) then "tailnet"
+    elif ($ifname | test("^(virbr|docker|podman|cni-|veth|br[0-9-])")) then "virtual"
+    elif ($ifname | test("^wl")) then "wifi"
+    elif ($lt == "ether") then "ether"
+    else "other" end'
+(
+    kind_of() { jq -nr --arg ifname "$1" --arg lt "ether" "$NET_KIND_FILTER"; }
+
+    assert_eq "$(kind_of br0)"              "virtual" "kind: hand-made bridge br0 classifies as virtual"
+    assert_eq "$(kind_of br-1a2b3c4d5e6f)"  "virtual" "kind: Docker-style br-<hash> classifies as virtual"
+    assert_eq "$(kind_of bridge0)"          "ether"   "kind: bridge0 (unrelated name starting with br) does NOT classify as virtual"
+    assert_eq "$(kind_of brcm0)"            "ether"   "kind: brcm0 (unrelated name starting with br) does NOT classify as virtual"
 ) || exit 1
 
 pass
