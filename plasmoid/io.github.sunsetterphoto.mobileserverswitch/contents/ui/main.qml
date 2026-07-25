@@ -1,5 +1,5 @@
 /*
- * Mobile Server Switch — plasmoid for switching between server and laptop
+ * Mobile AI Server Switch — plasmoid for switching between server and laptop
  * operation, plus a status/control center for performance, power, remote
  * access, services and firewall.
  *
@@ -99,7 +99,7 @@ PlasmoidItem {
     }
 
     Plasmoid.icon: modeIcon(mode)
-    toolTipMainText: "Mobile Server Switch: " + modeLabel(mode)
+    toolTipMainText: "Mobile AI Server Switch: " + modeLabel(mode)
     // Compact tooltip = the "at a glance" area in the panel (hover, no click).
     // Summarizes the most important bits from msw-status; every access to
     // status.* is guarded against the pre-poll state ({}).

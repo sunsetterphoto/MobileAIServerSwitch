@@ -1,4 +1,4 @@
-# Mobile Server Switch
+# Mobile AI Server Switch
 
 **A KDE Plasma 6 widget to monitor and control a workstation/laptop that's
 temporarily running as a server** — mode, performance/power, remote access,
@@ -13,7 +13,7 @@ phone over your Tailnet.
 
 Laptops/workstations sometimes double as a server for a while — a
 remote-desktop host for game streaming, a compute box, a media or dev
-server — and then go back to being a normal laptop. Mobile Server Switch
+server — and then go back to being a normal laptop. Mobile AI Server Switch
 started as a simple server/laptop toggle and grew into a **comprehensive
 control and status center**: mode, performance/power, remote access,
 services and firewall, all controllable remotely over your Tailnet — from
@@ -68,8 +68,8 @@ your phone, without needing a terminal.
 ### Quick
 
 ```bash
-git clone https://github.com/sunsetterphoto/MobileServerSwitch.git
-cd MobileServerSwitch
+git clone https://github.com/sunsetterphoto/MobileAIServerSwitch.git
+cd MobileAIServerSwitch
 ./install.sh
 ```
 
@@ -97,7 +97,7 @@ sudo install -D -m 755 system/usr-local-sbin/msw-*-apply -t /usr/local/sbin/
 ```
 
 Then add the widget to a panel or the desktop as usual ("Add Widgets" →
-"Mobile Server Switch").
+"Mobile AI Server Switch").
 
 ## Configuration
 
