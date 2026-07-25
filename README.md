@@ -49,7 +49,7 @@ capture.
 | Tab | What it shows / does |
 |---|---|
 | **Overview** | Compact read-only summary: mode, performance preset, dGPU power draw, battery/AC, Tailnet IP, SSH/remote-desktop status, active services, Wake-on-LAN. Sections jump to their detail tab on click. |
-| **Performance** | Three presets (power saver / balanced / performance) via KDE's PowerProfiles (`org.freedesktop.UPower.PowerProfiles`) plus a fine CPU-cap slider (`intel_pstate/max_perf_pct`, 16-100%, turbo on/off). Also: dGPU runtime power management, WiFi/Bluetooth radios, Energy Performance Preference (EPP). |
+| **Performance** | Three presets (power saver / balanced / performance) via KDE's PowerProfiles (`org.freedesktop.UPower.PowerProfiles`) plus a fine CPU-cap slider (`intel_pstate/max_perf_pct`, 16-100%, turbo on/off). Also: dGPU runtime power management and the WiFi/Bluetooth radios. |
 | **Mode** | Server ⇄ Laptop switch. Server mode favors uninterrupted uptime (screen lock/suspend behavior, charging, background services); switching back to Laptop stops the configured server services and asks for confirmation first. |
 | **Network** | How the machine is reachable right now: hostname, which interface carries the default route and via which gateway, the active DNS resolvers, and every interface with its IPv4/IPv6 addresses (selectable, so they can be copied). Virtual interfaces sort last and are labelled as such, so a bridge is not mistaken for a way in. |
 | **Remote Access** | Status and details for SSH, RDP (KRDP), VNC, Sunshine, KDE Connect, Tailnet (copyable IP), Wake-on-LAN. On/off switches for RDP and Sunshine; **SSH and Tailscale are deliberately read-only** (lockout protection). |
