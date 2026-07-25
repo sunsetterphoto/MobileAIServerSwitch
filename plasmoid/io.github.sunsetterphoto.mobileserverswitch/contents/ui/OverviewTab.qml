@@ -1,8 +1,8 @@
 /*
  * "Overview" tab: compact, read-only summary of all relevant state at a
- * glance -- mode, performance, dGPU, battery/AC, Tailnet IP, SSH/Sunshine
- * status, number of active services, WoL status. Default tab (index 0 in
- * main.qml) -- the popup opens here.
+ * glance -- mode, performance, dGPU, battery/AC, primary/tailnet address,
+ * SSH/Sunshine status, number of active services, WoL status. Default tab
+ * (index 0 in main.qml) -- the popup opens here.
  *
  * READ-ONLY: no CLI calls except ctrl.refresh() (the Refresh button). No
  * ctrl.perfCmd/powerCmd/runAndRefresh/switchMode here.
@@ -208,11 +208,28 @@ ColumnLayout {
                 detail: overviewTab.sunshineState.active ? "running" : "off"
             }
             PlasmaComponents3.Label {
-                visible: overviewTab.tailscaleState.active === true
-                         && !!overviewTab.tailscaleState.ip4 && overviewTab.tailscaleState.ip4 !== "?"
-                text: "Tailnet: " + (overviewTab.tailscaleState.ip4 || "—")
+                readonly property var netDefault: (overviewTab.ctrl.status
+                                                   && overviewTab.ctrl.status.network
+                                                   && overviewTab.ctrl.status.network.default) || null
+                visible: !!netDefault || (overviewTab.tailscaleState.active === true
+                                          && !!overviewTab.tailscaleState.ip4
+                                          && overviewTab.tailscaleState.ip4 !== "?")
+                text: {
+                    var parts = [];
+                    if (netDefault && netDefault.ip4) parts.push(netDefault.ip4);
+                    if (overviewTab.tailscaleState.active === true
+                        && overviewTab.tailscaleState.ip4
+                        && overviewTab.tailscaleState.ip4 !== "?")
+                        parts.push("tailnet " + overviewTab.tailscaleState.ip4);
+                    return "Addresses: " + parts.join(" · ");
+                }
                 opacity: 0.7
                 font: Kirigami.Theme.smallFont
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: overviewTab.navigate("network")
+                }
             }
             StatusRow {
                 on: overviewTab.wolState.enabled === true

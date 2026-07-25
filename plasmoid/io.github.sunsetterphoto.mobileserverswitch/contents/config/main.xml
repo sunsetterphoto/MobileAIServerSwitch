@@ -17,6 +17,9 @@
     <entry name="showMode" type="Bool">
       <default>true</default>
     </entry>
+    <entry name="showNetwork" type="Bool">
+      <default>true</default>
+    </entry>
     <entry name="showRemote" type="Bool">
       <default>true</default>
     </entry>

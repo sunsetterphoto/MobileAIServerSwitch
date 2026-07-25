@@ -254,6 +254,7 @@ PlasmoidItem {
             features: {
                 performance: c.showPerformance,
                 mode: c.showMode,
+                network: c.showNetwork,
                 remote: c.showRemote,
                 services: c.showServices,
                 firewall: c.showFirewall
@@ -318,6 +319,7 @@ PlasmoidItem {
         function onRdpBindChanged() { root.requestPersist(); }
         function onShowPerformanceChanged() { root.requestPersist(); }
         function onShowModeChanged() { root.requestPersist(); }
+        function onShowNetworkChanged() { root.requestPersist(); }
         function onShowRemoteChanged() { root.requestPersist(); }
         function onShowServicesChanged() { root.requestPersist(); }
         function onShowFirewallChanged() { root.requestPersist(); }
@@ -362,7 +364,7 @@ PlasmoidItem {
     }
 
     // --- Full representation (popup / desktop) -------------------------------
-    // Tabbed: Overview | Performance | Mode | Remote Access | Services | Firewall.
+    // Tabbed: Overview | Performance | Mode | Network | Remote Access | Services | Firewall.
     // Overview is the default tab (currentIndex: 0), so the popup always opens there.
     // Every tab gets access to this PlasmoidItem's state/functions via ctrl:root
     // -- separate .qml files don't otherwise see `root`/`exec` (no global
@@ -398,6 +400,7 @@ PlasmoidItem {
             { key: "overview", label: "Overview", always: true },
             { key: "performance", label: "Performance", always: false, show: Plasmoid.configuration.showPerformance },
             { key: "mode", label: "Mode", always: false, show: Plasmoid.configuration.showMode },
+            { key: "network", label: "Network", always: false, show: Plasmoid.configuration.showNetwork },
             { key: "remote", label: "Remote Access", always: false, show: Plasmoid.configuration.showRemote },
             { key: "services", label: "Services", always: false, show: Plasmoid.configuration.showServices },
             { key: "firewall", label: "Firewall", always: false, show: Plasmoid.configuration.showFirewall }
@@ -418,6 +421,7 @@ PlasmoidItem {
             case "overview": return overviewComp;
             case "performance": return performanceComp;
             case "mode": return modeComp;
+            case "network": return networkComp;
             case "remote": return remoteComp;
             case "services": return servicesComp;
             case "firewall": return firewallComp;
@@ -453,6 +457,7 @@ PlasmoidItem {
         }
         Component { id: performanceComp; PerformanceTab { ctrl: root } }
         Component { id: modeComp; ModeTab { ctrl: root } }
+        Component { id: networkComp; NetworkTab { ctrl: root } }
         Component { id: remoteComp; RemoteAccessTab { ctrl: root } }
         Component { id: servicesComp; ServicesTab { ctrl: root } }
         Component { id: firewallComp; FirewallTab { ctrl: root } }
