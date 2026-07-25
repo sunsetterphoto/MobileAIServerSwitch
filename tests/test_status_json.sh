@@ -321,4 +321,12 @@ NET_KIND_FILTER='
     assert_eq "$(kind_of brcm0)"            "ether"   "kind: brcm0 (unrelated name starting with br) does NOT classify as virtual"
 ) || exit 1
 
+# --- vnc: who is actually listening -------------------------------------------
+assert "jq -e '.remote.vnc | has(\"owner\")' >/dev/null <<<\"\$J\"" "remote.vnc has owner (may be null)"
+assert "jq -e '.remote.vnc | has(\"port\")' >/dev/null <<<\"\$J\""  "remote.vnc has port (may be null)"
+assert "jq -e '.remote.vnc.active == false or (.remote.vnc.port | type == \"number\")' >/dev/null <<<\"\$J\"" \
+       "an active vnc always carries a port number"
+assert "jq -e '.remote.vnc.active or (.remote.vnc.owner == null)' >/dev/null <<<\"\$J\"" \
+       "an inactive vnc has no owner"
+
 pass

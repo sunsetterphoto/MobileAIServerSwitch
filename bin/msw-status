@@ -379,7 +379,28 @@ RDP_INST=$(command -v krdpserver >/dev/null 2>&1 && echo true || (rpm -q krdp >/
 RDP_ACTIVE=$(svc_active_user app-org.kde.krdpserver.service)
 [ "$RDP_ACTIVE" = false ] && RDP_ACTIVE=$(port_active 3389)
 VNC_INST=$( (command -v krfb >/dev/null 2>&1 || command -v wayvnc >/dev/null 2>&1) && echo true || echo false)
-VNC_ACTIVE=$(port_active 5900)
+
+# Who holds 5900-5903? `ss -tlnp` names the process for sockets owned by the
+# invoking user and stays silent for anyone else's -- that asymmetry is the
+# whole trick, and it needs no privileges. A listener without a name is
+# therefore a foreign one, in practice a VM console: libvirt's SPICE with
+# autoport starts at 5900 too, so this range is not ours alone.
+VNC_LINES=$(ss -tlnpH 'sport >= :5900 and sport <= :5903' 2>/dev/null)
+if [ -n "$VNC_LINES" ]; then
+    VNC_ACTIVE=true
+    VNC_PORT=$(awk '{ n=split($4,a,":"); print a[n] }' <<<"$VNC_LINES" | sort -n | head -1)
+    [[ "$VNC_PORT" =~ ^[0-9]+$ ]] || VNC_PORT=null
+    VNC_OWNER=$(grep -o 'users:((\"[^\"]*\"' <<<"$VNC_LINES" | head -1 | sed 's/.*((\"//;s/\"$//')
+else
+    VNC_ACTIVE=false
+    VNC_PORT=null
+    VNC_OWNER=""
+fi
+if [ -n "$VNC_OWNER" ]; then
+    VNC_OWNER_J=$(jq -nc --arg o "$VNC_OWNER" '$o')
+else
+    VNC_OWNER_J=null
+fi
 
 # --- Sunshine: installed status (mirrors RDP_INST/VNC_INST above) --------------
 # Sunshine ships either as a native package (binary on PATH) or as a flatpak
@@ -439,6 +460,7 @@ jq -n \
   --argjson kdc_active "$(port_active 1716)" \
   --argjson rdp_inst "$RDP_INST" --argjson rdp_active "$RDP_ACTIVE" \
   --argjson vnc_inst "$VNC_INST" --argjson vnc_active "$VNC_ACTIVE" \
+  --argjson vnc_port "$VNC_PORT" --argjson vnc_owner "$VNC_OWNER_J" \
   --argjson wol "$WOL" \
   --argjson gpu_present "$GPU_PRESENT" --argjson gpu_awake "$GPU_AWAKE" \
   --arg gpu_dstate "$GPU_DSTATE" --argjson gpu_watts "$GPU_WATTS" --arg gpu_control "$GPU_CONTROL" \
@@ -460,7 +482,7 @@ jq -n \
       tailscale:{active:$ts_active,ip4:$ts_ip4,host:$ts_host,peers:$ts_peers},
       kdeconnect:{active:$kdc_active,port:1716},
       rdp:{installed:$rdp_inst,active:$rdp_active},
-      vnc:{installed:$vnc_inst,active:$vnc_active},
+      vnc:{installed:$vnc_inst,active:$vnc_active,port:$vnc_port,owner:$vnc_owner},
       wol:$wol
     },
     services:$services
