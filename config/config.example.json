@@ -54,6 +54,13 @@
       "unit": "syncthing.service",
       "scope": "user",
       "port": 8384
+    },
+    "hermes": {
+      "id": "hermes",
+      "label": "Hermes Agent (AI gateway)",
+      "unit": "hermes-gateway.service",
+      "scope": "user",
+      "port": null
     }
   },
 

@@ -157,7 +157,7 @@ else
 fi
 
 # --- services_detected: configured candidates are filtered ----------------------
-# Configure ALL nine detection candidates at once -- eight under their
+# Configure ALL ten detection candidates at once -- nine under their
 # canonical id (exercises the id-match) and nginx under a RENAMED id
 # (exercises the unit-match). services_detected must then be empty no matter
 # what is installed on this host, which keeps the check load-bearing
@@ -174,12 +174,13 @@ cat > "$CFG_FILE" <<'JSON'
     { "id": "docker",      "label": "Docker",      "unit": "docker.service",      "scope": "system", "port": 0 },
     { "id": "postgresql",  "label": "PostgreSQL",  "unit": "postgresql.service",  "scope": "system", "port": 5432 },
     { "id": "smb",         "label": "Samba",       "unit": "smb.service",         "scope": "system", "port": 445 },
+    { "id": "hermes",      "label": "Hermes",      "unit": "hermes-gateway.service", "scope": "user", "port": null },
     { "id": "myweb",       "label": "My Web",      "unit": "nginx.service",       "scope": "system", "port": 8080 }
   ]
 }
 JSON
 J4=$(bin/msw-status --json)
-assert "jq -e '.services | length == 9' >/dev/null <<<\"\$J4\""            "detected-filter fixture: all nine candidates configured"
+assert "jq -e '.services | length == 10' >/dev/null <<<\"\$J4\""           "detected-filter fixture: all ten candidates configured"
 assert "jq -e '.services_detected | length == 0' >/dev/null <<<\"\$J4\"" \
        "configured candidates are filtered from services_detected (id-match, plus unit-match for the renamed nginx)"
 

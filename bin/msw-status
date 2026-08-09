@@ -622,6 +622,7 @@ docker|Docker (containers)|docker.service|system|null
 nginx|nginx (web server)|nginx.service|system|80
 postgresql|PostgreSQL (database)|postgresql.service|system|5432
 smb|Samba (file sharing)|smb.service|system|445
+hermes|Hermes Agent (AI gateway)|hermes-gateway.service|user|null
 CANDIDATES
     jq -s '.' <<< "$rows"
 }
