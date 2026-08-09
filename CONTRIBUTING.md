@@ -37,6 +37,20 @@ something is unclear, open an issue first.
 - **Config is additive and optional.** `~/.config/mobileserverswitch/config.json`
   keys should default to `"auto"`/runtime detection when absent; a missing
   config file must never break a CLI.
+- **No kernel-module management.** No code path may `rmmod`/`modprobe` or
+  otherwise bind/unbind GPU drivers. The interaction surface for the dGPU
+  is exactly the PCI runtime-PM `control` attribute (`msw-power gpu`).
+  Reasons: (1) recent NVIDIA driver packages ship a fallback unit that loads
+  `nouveau` the moment `nvidia` is unloaded (triggered by the udev
+  `SYSTEMD_WANTS` on the PCI device, regardless of the unit's enabled
+  state), and (2) unbinding nouveau afterwards has been observed to oops
+  the kernel on hybrid laptops. Suspend safety for misbehaving drivers is
+  the job of system-level sleep-target automation *outside* this project;
+  this project contributes its part by stopping GPU-holding services via
+  the profiles' `services.stop` lists. Also treat `dgpu: auto` as
+  best-effort in any feature or doc: with current open-kernel-module
+  drivers the GPU stops autosuspending after the first CUDA use within a
+  boot (the driver holds internal runtime-PM references until warm reboot).
 
 ## Developing
 

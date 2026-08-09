@@ -74,6 +74,32 @@ changes what it explicitly configures.
 - At boot, `msw-profile-apply.service` re-applies the machine-level parts of
   the active profile (charge thresholds, power behavior, radios).
 
+## NVIDIA dGPU notes (hybrid graphics)
+
+If the machine has an NVIDIA dGPU next to the integrated GPU, three things
+are worth knowing:
+
+- **`dgpu: auto` is best-effort.** The profile option (and
+  `msw-power gpu auto`) sets the PCI runtime-PM `control` attribute. With
+  the NVIDIA open kernel modules, the GPU autosuspends reliably only *until
+  the first CUDA use within the current boot*; afterwards the driver holds
+  internal runtime-PM references and the GPU idles in D0 (~10–15 W) until a
+  warm reboot. The switch still works as an explicit keep-awake/auto toggle
+  — it just cannot force autosuspend against the driver.
+- **This project never loads or unloads kernel modules.** That is deliberate
+  (see [CONTRIBUTING.md](CONTRIBUTING.md)). On systems whose NVIDIA driver
+  misbehaves during system sleep, pair this widget with a system-level
+  sleep-target automation that stops GPU-holding services and unloads the
+  module *before* suspend. The profiles' `services.stop` lists complement
+  that automation at *mode switches* (e.g. back to Laptop), so GPU-holding
+  containers/services go away without waiting for a suspend.
+- **Watch out for distro fallback units.** Recent NVIDIA driver packages
+  ship a fallback service that loads `nouveau` the moment the `nvidia`
+  module is unloaded, and unbinding nouveau again has been observed to oops
+  the kernel on hybrid laptops. Any external sleep-hook setup must disable
+  or mask that fallback; see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+  design rule.
+
 ## Requirements & compatibility
 
 - **KDE Plasma 6, Wayland.** Built and tested against Plasma 6.7.

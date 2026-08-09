@@ -34,6 +34,20 @@
       "scope": "system",
       "port": 11434
     },
+    "comfyui": {
+      "id": "comfyui",
+      "label": "ComfyUI (image generation)",
+      "unit": "comfyui.service",
+      "scope": "user",
+      "port": 8188
+    },
+    "speaches": {
+      "id": "speaches",
+      "label": "Speaches (speech-to-text / text-to-speech)",
+      "unit": "speaches.service",
+      "scope": "user",
+      "port": 8000
+    },
     "syncthing": {
       "id": "syncthing",
       "label": "Syncthing (file sync)",
@@ -51,7 +65,7 @@
   },
 
   "profiles": {
-    "_comment": "Switchable profiles: 'msw-mode list' shows them all, 'msw-mode <id>' activates one. Every key is optional -- omit it, set it to null, or use \"keep\" to leave that aspect untouched when switching. The two defaults are meant to be edited; add your own profiles as extra keys in this map (id: lowercase letters, digits, dashes). Enums: lid_action/power_button/power_button_long/auto_suspend: ignore|sleep|shutdown|prompt|keep; wol/wifi/bluetooth: on|off|keep; screen_off_min/dim_min: null = keep, 0 = never, N = minutes; charge_thresholds: \"NN/NN\" or null; performance.profile: power-saver|balanced|performance|null; dgpu: null|keep|auto (\"keep\" keeps the dGPU awake). Machine-level parts are re-applied at boot.",
+    "_comment": "Switchable profiles: 'msw-mode list' shows them all, 'msw-mode <id>' activates one. Every key is optional -- omit it, set it to null, or use \"keep\" to leave that aspect untouched when switching. The two defaults are meant to be edited; add your own profiles as extra keys in this map (id: lowercase letters, digits, dashes). Enums: lid_action/power_button/power_button_long/auto_suspend: ignore|sleep|shutdown|prompt|keep; wol/wifi/bluetooth: on|off|keep; screen_off_min/dim_min: null = keep, 0 = never, N = minutes; charge_thresholds: \"NN/NN\" or null; performance.profile: power-saver|balanced|performance|null; dgpu: null|keep|auto (\"keep\" keeps the dGPU awake; \"auto\" is best-effort -- on current NVIDIA open-kernel-module drivers the GPU stops autosuspending after the first CUDA use within a boot, see README 'NVIDIA dGPU notes'). Machine-level parts are re-applied at boot.",
     "server": {
       "label": "Server", "icon": "network-server",
       "display": { "brightness": null, "resolution": null, "scale": null },
