@@ -92,7 +92,10 @@ are worth knowing:
   sleep-target automation that stops GPU-holding services and unloads the
   module *before* suspend. The profiles' `services.stop` lists complement
   that automation at *mode switches* (e.g. back to Laptop), so GPU-holding
-  containers/services go away without waiting for a suspend.
+  containers/services go away without waiting for a suspend. The Overview
+  and tooltip mark the dGPU when a process currently holds it
+  (`gpu.holders` in `msw-status`) — a held GPU is exactly the state that
+  blocks a clean module unload.
 - **Watch out for distro fallback units.** Recent NVIDIA driver packages
   ship a fallback service that loads `nouveau` the moment the `nvidia`
   module is unloaded, and unbinding nouveau again has been observed to oops

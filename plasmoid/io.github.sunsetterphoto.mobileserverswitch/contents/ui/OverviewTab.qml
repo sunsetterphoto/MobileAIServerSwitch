@@ -43,7 +43,7 @@ ColumnLayout {
     // Local fallbacks until the first poll completes (ctrl.status is still {}
     // until then) -- same pattern as PerformanceTab (gpuState/powerExtra) and
     // RemoteAccessTab (r/sshState/...).
-    readonly property var gpuState: (ctrl.status && ctrl.status.gpu) || ({ present: false, awake: false, watts: null, dstate: "?" })
+    readonly property var gpuState: (ctrl.status && ctrl.status.gpu) || ({ present: false, awake: false, watts: null, dstate: "?", holders: null })
     readonly property var powerState: (ctrl.status && ctrl.status.power) || ({})
     readonly property var remote: (ctrl.status && ctrl.status.remote) || ({})
     readonly property var sshState: (remote.ssh) || ({})
@@ -166,11 +166,12 @@ ColumnLayout {
             }
             PlasmaComponents3.Label {
                 visible: overviewTab.gpuState.present === true
-                text: overviewTab.gpuState.awake
+                text: (overviewTab.gpuState.awake
                       ? "▲ " + (overviewTab.gpuState.watts !== null && overviewTab.gpuState.watts !== undefined
                                 ? overviewTab.gpuState.watts + " W" : "active")
                         + " (" + overviewTab.gpuState.dstate + ")"
-                      : "asleep (" + overviewTab.gpuState.dstate + ")"
+                      : "asleep (" + overviewTab.gpuState.dstate + ")")
+                      + (overviewTab.gpuState.holders === true ? " · held by a process" : "")
             }
         }
     }

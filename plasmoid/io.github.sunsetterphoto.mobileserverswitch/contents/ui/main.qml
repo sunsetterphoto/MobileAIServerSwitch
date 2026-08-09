@@ -168,7 +168,8 @@ PlasmoidItem {
             s += "\ndGPU: " + (status.gpu.awake
                 ? ((status.gpu.watts !== null && status.gpu.watts !== undefined)
                    ? status.gpu.watts + " W" : "active")
-                : "asleep");
+                : "asleep")
+                + (status.gpu.holders === true ? " · held by a process" : "");
         if (battery >= 0)
             s += "\nBattery: " + battery + "%"
                  + (status.power && status.power.ac !== undefined

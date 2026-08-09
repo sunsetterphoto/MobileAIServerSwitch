@@ -48,6 +48,8 @@ assert "jq -e '.gpu | has(\"watts\")' >/dev/null <<<\"\$J\"" "has .gpu.watts (ev
 assert "jq -e '.gpu | has(\"awake\")' >/dev/null <<<\"\$J\"" "has .gpu.awake"
 assert "jq -e '.gpu | has(\"dstate\")' >/dev/null <<<\"\$J\"" "has .gpu.dstate"
 assert "jq -e '.gpu | has(\"control\")' >/dev/null <<<\"\$J\"" "has .gpu.control"
+assert "jq -e '.gpu | has(\"holders\")' >/dev/null <<<\"\$J\"" "has .gpu.holders"
+assert "jq -e '.gpu.holders == null or (.gpu.holders | type == \"boolean\")' >/dev/null <<<\"\$J\"" ".gpu.holders is bool or null"
 # Power extras
 assert "jq -e '.power_extra.epp' >/dev/null <<<\"\$J\""  "has .power_extra.epp"
 assert "jq -e '.power_extra.wifi' >/dev/null <<<\"\$J\"" "has .power_extra.wifi"
