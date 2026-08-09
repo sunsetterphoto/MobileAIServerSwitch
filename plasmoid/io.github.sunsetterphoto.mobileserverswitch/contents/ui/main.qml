@@ -1,14 +1,17 @@
 /*
- * Mobile AI Server Switch — plasmoid for switching between server and laptop
- * operation, plus a status/control center for performance, power, remote
- * access, services and firewall.
+ * Mobile AI Server Switch — plasmoid for switching between operation
+ * PROFILES (builtin: server/laptop; custom profiles are defined on the
+ * Profiles settings page), plus a status/control center for performance,
+ * power, remote access, services and firewall.
  *
  * Calls exclusively the `msw-*` CLIs (single source of truth). NOTHING of the
  * logic is duplicated here — the plasmoid is pure GUI.
  *
- * Security feature: switching to LAPTOP stops Sunshine and the server
- * services. That is why exactly this switch requires confirmation, so a
- * mis-click can't kill a running stream. Switching to SERVER is immediate.
+ * Security feature: if the TARGET profile's services.stop list names
+ * services that are currently running, switching to it asks for
+ * confirmation first, so a mis-click can't kill a running stream. Every
+ * other switch is immediate. (Generalizes the former hardcoded "switching
+ * to laptop stops Sunshine" rule; the check lives in ModeTab.qml.)
  *
  * API verified against Plasma 6.7:
  *   - PlasmoidItem, compact/fullRepresentation  (org.kde.plasma.plasmoid)
@@ -68,7 +71,15 @@ PlasmoidItem {
 
     // Derived properties: existing UI bindings stay unchanged, defaults apply
     // until the first poll completes (status === {}).
-    property string mode: status.mode || "?"           // "server" | "laptop" | "?"
+    // Active profile id ("server" | "laptop" | <custom id> | "?"). Newer
+    // CLIs report it in status.profiles.active; status.mode is the legacy
+    // location, kept as fallback for CLIs without a profiles block.
+    property string mode: {
+        if (status.profiles && typeof status.profiles.active === "string"
+                && status.profiles.active.length > 0)
+            return status.profiles.active;
+        return status.mode || "?";
+    }
     property string sunshine: {                        // "active" | "inactive" | "?"
         if (!status.remote || !status.remote.sunshine) return "?";
         return status.remote.sunshine.active ? "active" : "inactive";
@@ -88,12 +99,57 @@ PlasmoidItem {
     readonly property bool isServer: mode === "server"
     readonly property bool isLaptop: mode === "laptop"
 
+    // Parsed profilesJson setting (configured profile definitions, keyed by
+    // id). Feeds ModeTab's stop-confirmation logic and serves as label/icon
+    // fallback below. Re-evaluates automatically on every profilesJson
+    // change; parse failures degrade to {} (never throw into the UI).
+    property var profilesMap: {
+        try {
+            var o = JSON.parse(Plasmoid.configuration.profilesJson);
+            return (o && typeof o === "object" && !Array.isArray(o)) ? o : {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    // Configured services from msw-status, tolerant of both shapes: the
+    // legacy flat array and the newer object with "configured"/"detected"
+    // arrays (the latter additionally lists installed-but-unconfigured
+    // units). ModeTab checks this to decide whether a profile switch would
+    // stop a running service.
+    readonly property var servicesList: {
+        var s = status.services;
+        if (Array.isArray(s)) return s;
+        if (s && Array.isArray(s.configured)) return s.configured;
+        return [];
+    }
+
+    // Look a profile id up in the live list from msw-status (carries
+    // label/icon/builtin for custom profiles too).
+    function profileEntry(m) {
+        var avail = (status.profiles && status.profiles.available) || [];
+        for (var i = 0; i < avail.length; i++)
+            if (avail[i] && avail[i].id === m) return avail[i];
+        return null;
+    }
+    // Label/icon resolution order: status.profiles.available -> configured
+    // profilesMap -> legacy hardcoded builtin texts (CLIs without a
+    // profiles block) -> the raw id / generic icon.
     function modeLabel(m) {
+        var e = profileEntry(m);
+        if (e && e.label) return e.label;
+        var p = profilesMap[m];
+        if (p && p.label) return p.label;
         if (m === "server") return "Server (always on)";
         if (m === "laptop") return "Laptop (mobile)";
-        return "unknown";
+        if (m === "?") return "unknown";
+        return m;
     }
     function modeIcon(m) {
+        var e = profileEntry(m);
+        if (e && e.icon) return e.icon;
+        var p = profilesMap[m];
+        if (p && p.icon) return p.icon;
         if (m === "server") return "network-server";
         if (m === "laptop") return "computer-laptop";
         return "dialog-question";
@@ -269,10 +325,11 @@ PlasmoidItem {
     // bin/msw-config-write, exactly like every other CLI invocation here.
     //
     // buildConfigJson() reassembles the nested shape config.json/the CLIs
-    // expect (see config/config.example.json) from the flat keys. The three
+    // expect (see config/config.example.json) from the flat keys. The
     // *Json entries (servicesJson/stopOnLaptopJson/firewallAppsJson) are
-    // themselves JSON-array strings (KConfigXT has no native list-of-object
-    // type), parsed back into real arrays here.
+    // themselves JSON-array strings and profilesJson a JSON-object string
+    // (KConfigXT has no native list/map-of-object types), parsed back into
+    // real arrays/objects here.
     function buildConfigJson() {
         var c = Plasmoid.configuration;
         function parseArray(s) {
@@ -283,6 +340,14 @@ PlasmoidItem {
                 return [];
             }
         }
+        function parseObject(s) {
+            try {
+                var o = JSON.parse(s);
+                return (o && typeof o === "object" && !Array.isArray(o)) ? o : {};
+            } catch (e) {
+                return {};
+            }
+        }
         return {
             network: {
                 lan_interfaces: c.lanInterfaces,
@@ -291,6 +356,10 @@ PlasmoidItem {
                 wol_nic: c.wolNic
             },
             services: parseArray(c.servicesJson),
+            // Whole "profiles" map (replaces the legacy per-mode keys below
+            // on the CLI side; msw-config-write is called with
+            // `--replace profiles` so deletions propagate).
+            profiles: parseObject(c.profilesJson),
             mode: {
                 enabled: c.modeEnabled,
                 charge_thresholds: {
@@ -329,7 +398,10 @@ PlasmoidItem {
     function persistConfig() {
         var json = JSON.stringify(root.buildConfigJson());
         var b64 = Qt.btoa(unescape(encodeURIComponent(json)));
-        exec.run("printf '%s' '" + b64 + "' | base64 -d | msw-config-write",
+        // `--replace profiles`: everything else deep-merges as before, but
+        // the "profiles" key is replaced wholesale so profile DELETIONS
+        // from the Profiles settings page propagate to config.json.
+        exec.run("printf '%s' '" + b64 + "' | base64 -d | msw-config-write --replace profiles",
             function(out, err, code) {
                 if (code !== 0)
                     console.warn("msw-config-write failed (exit " + code + "):", err || out);
@@ -365,6 +437,7 @@ PlasmoidItem {
         function onFirewallZoneChanged() { root.requestPersist(); }
         function onWolNicChanged() { root.requestPersist(); }
         function onServicesJsonChanged() { root.requestPersist(); }
+        function onProfilesJsonChanged() { root.requestPersist(); }
         function onModeEnabledChanged() { root.requestPersist(); }
         function onChargeThresholdsEnabledChanged() { root.requestPersist(); }
         function onChargeServerChanged() { root.requestPersist(); }
@@ -382,7 +455,88 @@ PlasmoidItem {
         function onShowNotesChanged() { root.requestPersist(); }
     }
 
-    Component.onCompleted: refresh()
+    // --- One-time migration: legacy Mode keys -> profiles -------------------
+    // Before the generic profiles rework, per-mode settings lived in the
+    // flat legacy keys chargeThresholdsEnabled/chargeServer/chargeLaptop/
+    // stopOnLaptopJson (they intentionally remain in main.xml as the
+    // migration source; no settings page edits them anymore). Those values
+    // now live inside profiles.<id>. This runs ONCE at load: only when
+    // profilesJson is still the untouched kcfg default AND at least one
+    // legacy key deviates from ITS default (i.e. the user actually
+    // configured something under the old scheme). The merged result is
+    // written back to profilesJson, which triggers persistConfig() via
+    // onProfilesJsonChanged, so the migrated profiles reach config.json
+    // immediately.
+    //
+    // MUST stay in sync with the profilesJson <default> in
+    // contents/config/main.xml (and configProfiles.qml's
+    // cfg_profilesJsonDefault).
+    readonly property string profilesDefaultJson: '{"server":{"label":"Server","icon":"network-server","display":{"brightness":null,"resolution":null,"scale":null},"power":{"lid_action":"ignore","power_button":"ignore","power_button_long":"ignore","auto_suspend":"ignore","auto_suspend_min":0,"screen_off_min":0,"dim_min":0,"wol":"on"},"locker":{"autolock":true,"timeout_min":15},"charge_thresholds":"40/80","performance":{"profile":"balanced","cpu_cap":null,"epp":null,"aspm":null,"dgpu":null},"services":{"start":["sunshine"],"stop":[]},"radios":{"wifi":"keep","bluetooth":"keep"}},"laptop":{"label":"Laptop","icon":"computer-laptop","display":{"brightness":null,"resolution":null,"scale":null},"power":{"lid_action":"sleep","power_button":"prompt","power_button_long":"shutdown","auto_suspend":"sleep","auto_suspend_min":30,"screen_off_min":10,"dim_min":5,"wol":"off"},"locker":{"autolock":true,"timeout_min":5},"charge_thresholds":"0/100","performance":{"profile":"balanced","cpu_cap":null,"epp":null,"aspm":null,"dgpu":null},"services":{"start":[],"stop":["sunshine"]},"radios":{"wifi":"on","bluetooth":"keep"}}}'
+
+    function defaultProfiles() {
+        try {
+            return JSON.parse(profilesDefaultJson);
+        } catch (e) {
+            return {};
+        }
+    }
+
+    // "Still the default?" -- exact string match first, then a semantic
+    // comparison (parse + re-serialize) so harmless formatting differences
+    // don't defeat the check. A user-customized map never matches.
+    function isDefaultProfilesJson(s) {
+        if (s === profilesDefaultJson) return true;
+        try {
+            return JSON.stringify(JSON.parse(s)) === JSON.stringify(defaultProfiles());
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function migrateLegacyProfileSettings() {
+        var c = Plasmoid.configuration;
+        if (!isDefaultProfilesJson(c.profilesJson)) return;
+        // Legacy defaults from main.xml (keep in sync if they ever change):
+        var legacyTouched =
+            c.chargeThresholdsEnabled !== false ||
+            c.chargeServer !== "40/80" ||
+            c.chargeLaptop !== "0/100" ||
+            c.stopOnLaptopJson !== "[]";
+        if (!legacyTouched) return;
+        var profiles = defaultProfiles();
+        if (!profiles.server || !profiles.laptop) return;  // broken default: do nothing
+        // Charge thresholds: under the old scheme "disabled" meant "don't
+        // touch" -> null in the profile schema. Enabled -> per-mode values.
+        if (c.chargeThresholdsEnabled) {
+            profiles.server.charge_thresholds = c.chargeServer;
+            profiles.laptop.charge_thresholds = c.chargeLaptop;
+        } else {
+            profiles.server.charge_thresholds = null;
+            profiles.laptop.charge_thresholds = null;
+        }
+        // stop_on_laptop ids: the server profile STARTS them, the laptop
+        // profile STOPS them. Union with the builtin defaults so "sunshine"
+        // is kept even when the legacy list named only other services.
+        var stops = [];
+        try {
+            var a = JSON.parse(c.stopOnLaptopJson);
+            if (Array.isArray(a)) stops = a;
+        } catch (e) { /* keep [] */ }
+        function union(list, add) {
+            var out = list.slice();
+            for (var i = 0; i < add.length; i++)
+                if (out.indexOf(add[i]) < 0) out.push(add[i]);
+            return out;
+        }
+        profiles.server.services.start = union(profiles.server.services.start, stops);
+        profiles.laptop.services.stop = union(profiles.laptop.services.stop, stops);
+        Plasmoid.configuration.profilesJson = JSON.stringify(profiles);
+    }
+
+    Component.onCompleted: {
+        refresh();
+        migrateLegacyProfileSettings();
+    }
 
     // Refresh periodically so the displayed mode stays correct even when it
     // was switched via SSH/CLI (msw-mode ...).
@@ -404,16 +558,18 @@ PlasmoidItem {
             anchors.fill: parent
             source: root.modeIcon(root.mode)
             active: compact.containsMouse
-            // Light status dot: green = server, blue = laptop
+            // Light status dot: green = server, blue = laptop, grey = any
+            // other (custom) profile; hidden while the mode is unknown.
             Rectangle {
                 width: Math.round(parent.width * 0.30)
                 height: width
                 radius: width / 2
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                visible: root.mode === "server" || root.mode === "laptop"
+                visible: root.mode !== "?"
                 color: root.isServer ? Kirigami.Theme.positiveTextColor
-                                     : Kirigami.Theme.highlightColor
+                       : root.isLaptop ? Kirigami.Theme.highlightColor
+                       : Kirigami.Theme.neutralTextColor
                 border.width: 1
                 border.color: Kirigami.Theme.backgroundColor
             }

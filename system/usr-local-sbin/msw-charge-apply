@@ -1,26 +1,111 @@
 #!/usr/bin/env bash
-# Sets the battery charge thresholds according to the saved msw-mode state
-# and config.mode.charge_thresholds (~/.config/mobileserverswitch/config.json).
-# Single source of truth for the *mode*: /var/lib/mobileserverswitch/mode
-# (server|laptop). Callers: the msw-mode script (after a mode switch) and
+# Sets the battery charge thresholds according to the saved msw-mode profile
+# and ~/.config/mobileserverswitch/config.json. Single source of truth for the
+# *profile id*: /var/lib/mobileserverswitch/mode (tests may override the path
+# via MSW_STATE_FILE, mirroring the MSW_CONFIG_FILE override of msw-config).
+# Callers: the msw-mode script (after a profile switch) and
 # msw-charge-thresholds.service (at boot).
 #
 # GENERIC + OPT-IN (see .superpowers/specs/2026-07-19-public-release-design.md §3):
 # - Hardware support is detected generically (first battery under
 #   /sys/class/power_supply/*/ that exposes charge_control_end_threshold),
-#   not hardcoded to BAT0.
-# - Thresholds are only ever written if BOTH hold: the sysfs support above
-#   exists, AND config.mode.charge_thresholds.enabled == true. Missing
-#   config / disabled / unsupported hardware -> skip silently, exit 0, no
-#   sysfs write at all (fail-safe default: leave the battery firmware's own
-#   behavior alone unless the user opted in).
-# - Threshold values themselves come from config.mode.charge_thresholds.server
-#   / .laptop ("START/END" strings, e.g. "40/80"); malformed config values
-#   fall back to the built-in defaults (40/80 server, 0/100 laptop).
+#   not hardcoded to BAT0. Unsupported hardware -> skip, exit 0.
+# - Thresholds are only ever written when the config asks for them; any skip
+#   below exits 0 with a message and leaves the battery firmware's own
+#   behavior alone (fail-safe default).
+#
+# THRESHOLD RESOLUTION
+# - config.json HAS a "profiles" map (current schema): the pair comes from
+#   profiles.<MODE>.charge_thresholds ("NN/NN"; MODE = content of the state
+#   file). There is NO enabled gate anymore -- a literal null is the
+#   per-profile opt-out. Key present but null / not an "NN/NN" string / saved
+#   profile unknown -> skip with a message, exit 0. Key MISSING falls back to
+#   the builtin profile defaults: server = 40/80, laptop = 0/100 (a custom
+#   profile without the key -> skip, it has no builtin default).
+# - config.json has NO "profiles" key (legacy): pre-profiles behavior,
+#   unchanged -- gated on config.mode.charge_thresholds.enabled == true, pair
+#   from config.mode.charge_thresholds.server|.laptop (defaults 40/80 /
+#   0/100), malformed values fall back to those defaults with a warning, an
+#   unknown mode falls back to server.
 set -uo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 . "$SCRIPT_DIR/msw-config"
-STATE=/var/lib/mobileserverswitch/mode
+STATE="${MSW_STATE_FILE:-/var/lib/mobileserverswitch/mode}"
+
+MODE=$( [ -r "$STATE" ] && cat "$STATE" || echo server )   # default: server
+
+# parse_pair "NN/NN" -> prints "START END" on success, fails (non-zero) on
+# anything not matching that shape.
+parse_pair() {
+    [[ "$1" =~ ^([0-9]{1,3})/([0-9]{1,3})$ ]] || return 1
+    printf '%s %s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+}
+
+has_profiles() {
+    command -v jq >/dev/null 2>&1 || return 1
+    [ -r "$MSW_CONFIG_FILE" ] || return 1
+    jq -e '(.profiles // null) | type == "object"' "$MSW_CONFIG_FILE" >/dev/null 2>&1
+}
+
+PAIR=""
+if has_profiles; then
+    # --- profiles schema: profiles.<MODE>.charge_thresholds ------------------
+    if ! jq -e --arg m "$MODE" '.profiles | has($m)' "$MSW_CONFIG_FILE" >/dev/null 2>&1; then
+        echo "Saved profile '$MODE' is not defined in the config's profiles map -- charge thresholds skipped, unchanged"
+        exit 0
+    fi
+    if jq -e --arg m "$MODE" '.profiles[$m] | has("charge_thresholds")' "$MSW_CONFIG_FILE" >/dev/null 2>&1; then
+        VAL=$(jq -r --arg m "$MODE" '.profiles[$m].charge_thresholds // "null"' "$MSW_CONFIG_FILE" 2>/dev/null)
+        if [ "$VAL" = "null" ]; then
+            echo "Profile '$MODE': charge_thresholds is null (opt-out) -- skipped, thresholds unchanged"
+            exit 0
+        fi
+        if ! parse_pair "$VAL" >/dev/null 2>&1; then
+            echo "WARNING: profile '$MODE': charge_thresholds ('$VAL') is not in NN/NN form -- skipped, thresholds unchanged" >&2
+            exit 0
+        fi
+        PAIR=$VAL
+    else
+        # Key missing -> builtin profile default (only server/laptop have one)
+        case "$MODE" in
+            server) PAIR="40/80" ;;   # permanent AC operation -> preserve battery
+            laptop) PAIR="0/100" ;;   # mobile / battery cycling -> charge fully
+            *)
+                echo "Profile '$MODE' has no charge_thresholds (and no builtin default) -- skipped, thresholds unchanged"
+                exit 0
+                ;;
+        esac
+    fi
+else
+    # --- legacy schema (no "profiles" key): pre-profiles behavior, unchanged --
+    ENABLED=$(msw_cfg mode.charge_thresholds.enabled false)
+    case "$ENABLED" in
+        true|1|yes) ;;
+        *)
+            echo "Charge thresholds disabled (config.mode.charge_thresholds.enabled != true) -- skipped, thresholds unchanged"
+            exit 0
+            ;;
+    esac
+
+    case "$MODE" in
+        server) DEFAULT_PAIR="40/80"  ;;   # permanent AC operation -> preserve battery
+        laptop) DEFAULT_PAIR="0/100"  ;;   # mobile / battery cycling -> charge fully
+        *)
+            echo "Unknown mode '$MODE' in $STATE - falling back to server"
+            MODE=server; DEFAULT_PAIR="40/80"
+            ;;
+    esac
+
+    CFG_PAIR=$(msw_cfg "mode.charge_thresholds.$MODE" "$DEFAULT_PAIR")
+    if ! parse_pair "$CFG_PAIR" >/dev/null 2>&1; then
+        echo "WARNING: config.mode.charge_thresholds.$MODE ('$CFG_PAIR') is not in NN/NN form -- using built-in default $DEFAULT_PAIR" >&2
+        PAIR=$DEFAULT_PAIR
+    else
+        PAIR=$CFG_PAIR
+    fi
+fi
+
+read -r START END <<< "$(parse_pair "$PAIR")"
 
 # --- Generic hardware detection: first battery with threshold support --------
 BAT=""
@@ -34,42 +119,16 @@ if [ -z "$BAT" ]; then
     exit 0
 fi
 
-# --- Opt-in gate: config.mode.charge_thresholds.enabled -----------------------
-ENABLED=$(msw_cfg mode.charge_thresholds.enabled false)
-case "$ENABLED" in
-    true|1|yes) ;;
-    *)
-        echo "Charge thresholds disabled (config.mode.charge_thresholds.enabled != true) -- skipped, thresholds unchanged ($BAT)"
-        exit 0
-        ;;
-esac
-
-MODE=$( [ -r "$STATE" ] && cat "$STATE" || echo server )   # default: server
-
-# parse_pair "NN/NN" -> prints "START END" on success, fails (non-zero) on
-# anything not matching that shape.
-parse_pair() {
-    [[ "$1" =~ ^([0-9]{1,3})/([0-9]{1,3})$ ]] || return 1
-    printf '%s %s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
-}
-
-case "$MODE" in
-    server) DEFAULT_PAIR="40/80"  ;;   # permanent AC operation -> preserve battery
-    laptop) DEFAULT_PAIR="0/100"  ;;   # mobile / battery cycling -> charge fully
-    *)
-        echo "Unknown mode '$MODE' in $STATE - falling back to server"
-        MODE=server; DEFAULT_PAIR="40/80"
-        ;;
-esac
-
-CFG_PAIR=$(msw_cfg "mode.charge_thresholds.$MODE" "$DEFAULT_PAIR")
-if ! read -r START END <<< "$(parse_pair "$CFG_PAIR")"; then
-    echo "WARNING: config.mode.charge_thresholds.$MODE ('$CFG_PAIR') is not in NN/NN form -- using built-in default $DEFAULT_PAIR" >&2
-    read -r START END <<< "$(parse_pair "$DEFAULT_PAIR")"
+# A failed write (no root, firmware reject) must NOT be masked by the readback
+# below -- the current values can coincidentally equal the target pair.
+if ! echo "$START" > "$BAT/charge_control_start_threshold"; then
+    echo "ERROR: cannot write $BAT/charge_control_start_threshold (root required?)" >&2
+    exit 1
 fi
-
-echo "$START" > "$BAT/charge_control_start_threshold"
-echo "$END"   > "$BAT/charge_control_end_threshold"
+if ! echo "$END" > "$BAT/charge_control_end_threshold"; then
+    echo "ERROR: cannot write $BAT/charge_control_end_threshold (root required?)" >&2
+    exit 1
+fi
 
 RS=$(cat "$BAT/charge_control_start_threshold"); RE=$(cat "$BAT/charge_control_end_threshold")
 if [ "$RS" = "$START" ] && [ "$RE" = "$END" ]; then

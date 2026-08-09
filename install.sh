@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # install.sh — installs Mobile AI Server Switch onto this system: the plasmoid,
-# the 6 CLIs, the 4 privileged apply helpers, an optional systemd unit, a
-# scoped sudoers grant (opt-in, consent-gated) and a default config.
+# the 6 CLIs, the privileged apply helpers, the boot-time profile re-apply
+# systemd unit (default on, opt out via --no-profile-service), an optional
+# charge-thresholds unit, a scoped sudoers grant (opt-in, consent-gated) and a
+# default config.
 # Idempotent (safe to re-run). See uninstall.sh for the reverse, and
 # scripts/sync.sh for the lighter-weight dev-deploy loop this installer's
 # path knowledge mirrors.
@@ -24,6 +26,7 @@ DRY_RUN=0
 NO_SUDOERS=0
 ASSUME_YES=0
 WITH_CHARGE_SERVICE=0
+NO_PROFILE_SERVICE=0
 
 usage() {
     cat <<'EOF'
@@ -33,6 +36,7 @@ Usage: install.sh [options]
   --no-sudoers            Skip the scoped sudoers file entirely (no prompt either).
   --yes                   Assume "yes" at the sudoers consent prompt (non-interactive).
   --with-charge-service   Also install msw-charge-thresholds.service (opt-in, not enabled).
+  --no-profile-service    Skip msw-profile-apply.service (installed + enabled by default).
   -h, --help              Show this help.
 EOF
 }
@@ -43,6 +47,7 @@ while [ $# -gt 0 ]; do
         --no-sudoers) NO_SUDOERS=1 ;;
         --yes) ASSUME_YES=1 ;;
         --with-charge-service) WITH_CHARGE_SERVICE=1 ;;
+        --no-profile-service) NO_PROFILE_SERVICE=1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -151,6 +156,33 @@ else
     log "  Skipped (pass --with-charge-service to install it)."
 fi
 
+# --- Boot-time profile re-apply unit (default) ---------------------------------
+step "systemd unit: msw-profile-apply.service (default: installed + enabled)"
+if [ "$NO_PROFILE_SERVICE" = 1 ]; then
+    log "  Skipped (--no-profile-service)."
+else
+    UNIT_SRC="system/systemd/msw-profile-apply.service"
+    [ -f "$UNIT_SRC" ] || die "unit source not found: $UNIT_SRC"
+    # Render the placeholder tokens in the unit template (same substitution
+    # idea as __USER__ in the sudoers file): the unit runs as root at boot,
+    # so the invoking user's config path and CLI dir must be baked in.
+    UNIT_CONTENT=$(sed -e "s|__CONFIG__|$CONFIG_DST|g" -e "s|__USERBIN__|$BIN_DST|g" "$UNIT_SRC")
+    log "  Target: $SYSTEMD_DST/msw-profile-apply.service (mode 644, root; rendered for this user)"
+    log "  Content:"
+    while IFS= read -r line; do log "    $line"; done <<<"$UNIT_CONTENT"
+    log "  [sudo] systemctl daemon-reload"
+    log "  [sudo] systemctl enable msw-profile-apply.service"
+    if [ "$DRY_RUN" = 0 ]; then
+        TMP=$(mktemp)
+        printf '%s\n' "$UNIT_CONTENT" > "$TMP"
+        sudo install -D -m 644 "$TMP" "$SYSTEMD_DST/msw-profile-apply.service"
+        rm -f "$TMP"
+        sudo systemctl daemon-reload
+        sudo systemctl enable msw-profile-apply.service
+        log "  Installed and enabled (runs at boot; not started now)."
+    fi
+fi
+
 # --- Scoped sudoers ----------------------------------------------------------
 step "Scoped sudoers (exactly the 4 helper paths)"
 if [ "$NO_SUDOERS" = 1 ]; then
@@ -220,6 +252,8 @@ cat <<EOF
   1. Reload the plasmoid:  kquitapp6 plasmashell && kstart plasmashell  (or log out/in)
   2. Right-click the desktop/panel -> Add Widgets... -> search "Mobile AI Server Switch"
   3. Edit $CONFIG_DST to enable services / override auto-detection.
+  4. The active profile's machine-level settings are re-applied at every boot
+     (msw-profile-apply.service).
 EOF
 [ "$DRY_RUN" = 1 ] && log "(dry-run: nothing was installed)"
 exit 0

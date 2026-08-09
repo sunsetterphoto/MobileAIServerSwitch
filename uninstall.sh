@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # uninstall.sh — reverses install.sh: removes the plasmoid, the CLIs, the
-# privileged helpers, the optional systemd unit and the scoped sudoers file.
+# privileged helpers, the systemd units and the scoped sudoers file.
 # The user config (~/.config/mobileserverswitch/config.json) is left in
 # place unless --purge is given.
 set -euo pipefail
@@ -13,7 +13,7 @@ PLASMOID_DST="$HOME/.local/share/plasma/plasmoids/$PLASMOID_ID"
 BIN_DST="$HOME/.local/bin"
 SBIN_DST="/usr/local/sbin"
 SYSTEMD_DST="/etc/systemd/system"
-SYSTEMD_UNIT="msw-charge-thresholds.service"
+SYSTEMD_UNITS="msw-charge-thresholds.service msw-profile-apply.service"
 SUDOERS_DST="/etc/sudoers.d/mobileserverswitch"
 CONFIG_DST="${XDG_CONFIG_HOME:-$HOME/.config}/mobileserverswitch/config.json"
 CONFIG_DIR="$(dirname "$CONFIG_DST")"
@@ -89,16 +89,22 @@ for f in system/usr-local-sbin/*; do
     rm_file "$SBIN_DST/$(basename "$f")" 1
 done
 
-# --- systemd unit --------------------------------------------------------------
-step "systemd unit ($SYSTEMD_UNIT)"
-if [ -e "$SYSTEMD_DST/$SYSTEMD_UNIT" ]; then
-    log "  [sudo] systemctl disable --now $SYSTEMD_UNIT"
-    [ "$DRY_RUN" = 0 ] && sudo systemctl disable --now "$SYSTEMD_UNIT" 2>/dev/null || true
-    rm_file "$SYSTEMD_DST/$SYSTEMD_UNIT" 1
+# --- systemd units ---------------------------------------------------------------
+step "systemd units"
+RELOAD=0
+for UNIT in $SYSTEMD_UNITS; do
+    if [ -e "$SYSTEMD_DST/$UNIT" ]; then
+        log "  [sudo] systemctl disable --now $UNIT"
+        [ "$DRY_RUN" = 0 ] && sudo systemctl disable --now "$UNIT" 2>/dev/null || true
+        rm_file "$SYSTEMD_DST/$UNIT" 1
+        RELOAD=1
+    else
+        log "  (absent) $SYSTEMD_DST/$UNIT"
+    fi
+done
+if [ "$RELOAD" = 1 ]; then
     log "  [sudo] systemctl daemon-reload"
     [ "$DRY_RUN" = 0 ] && sudo systemctl daemon-reload
-else
-    log "  (absent) $SYSTEMD_DST/$SYSTEMD_UNIT"
 fi
 
 # --- Sudoers -------------------------------------------------------------------

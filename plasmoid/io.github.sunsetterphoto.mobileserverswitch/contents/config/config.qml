@@ -28,6 +28,11 @@ ConfigModel {
         source: "configMode.qml"
     }
     ConfigCategory {
+        name: "Profiles"
+        icon: "system-switch-user"
+        source: "configProfiles.qml"
+    }
+    ConfigCategory {
         name: "Firewall"
         icon: "preferences-security-firewall"
         source: "configFirewall.qml"

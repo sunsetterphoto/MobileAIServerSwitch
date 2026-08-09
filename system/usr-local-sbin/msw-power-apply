@@ -98,12 +98,15 @@ case "$WHAT" in
         ;;
 
     wol)
-        [ -n "$NIC" ] || { echo "wol: no wired default-route NIC detected (set network.wol_nic in config.json to override)" >&2; exit 1; }
+        # Validate the value BEFORE the NIC check: exit 2 = bad invocation,
+        # exit 1 = tried and failed (see test_power_apply.sh).
         case "$VAL" in
-            on)  ethtool -s "$NIC" wol g; WANT=g; NMVAL=magic  ;;
-            off) ethtool -s "$NIC" wol d; WANT=d; NMVAL=ignore ;;
+            on)  WANT=g; NMVAL=magic  ;;
+            off) WANT=d; NMVAL=ignore ;;
             *) echo "wol: value must be on|off" >&2; exit 2 ;;
         esac
+        [ -n "$NIC" ] || { echo "wol: no wired default-route NIC detected (set network.wol_nic in config.json to override)" >&2; exit 1; }
+        ethtool -s "$NIC" wol "$WANT"
         R=$(ethtool "$NIC" | awk -F': ' '/^[[:space:]]*Wake-on:/{print $2; exit}')
         if [ "$R" != "$WANT" ]; then
             echo "ERROR: wanted wol=$WANT, ethtool shows Wake-on=$R" >&2; exit 1

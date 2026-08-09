@@ -1,14 +1,59 @@
 #!/usr/bin/env bash
-# msw-mode — operating-mode switch for Mobile AI Server Switch
+# msw-mode — profile switcher for Mobile AI Server Switch
 #
-#   msw-mode server   permanent operation / remote-desktop server (default)
-#   msw-mode laptop   mobile normal operation
-#   msw-mode status   show current state
+#   msw-mode <profile-id>   apply a profile (builtin: server, laptop; or a
+#                           custom id from config.json's "profiles" map)
+#   msw-mode list           list profiles: id <TAB> label <TAB> icon <TAB> active|-
+#   msw-mode status         show current state
 #
-# Single source of truth for the mode switch. All .desktop launchers and the
-# plasmoid exclusively call this script.
+# Single source of truth for profile switching. All .desktop launchers and the
+# plasmoid exclusively call this script. "server" and "laptop" are builtin
+# profile ids, so the CLI stays compatible with pre-profile versions of this
+# script and works with no config file at all.
 #
-# All config keys are verified against the Plasma 6 source (KDE upstream):
+# PROFILE SCHEMA (config.json -> "profiles": { "<id>": { ... } })
+#   label, icon          display metadata for the plasmoid
+#   display              brightness (0-100), resolution ("1920x1080@60"), scale
+#                        (factor) -- all null = leave the display alone
+#   power                lid_action / power_button / power_button_long /
+#                        auto_suspend: ignore|sleep|shutdown|prompt|"keep";
+#                        auto_suspend_min: minutes (written together with
+#                        auto_suspend); screen_off_min / dim_min: minutes,
+#                        null = leave alone, 0 = never (actively disabled);
+#                        wol: on|off|"keep"
+#   locker               autolock: true|false|"keep", timeout_min (minutes)
+#   charge_thresholds    "NN/NN" or null (null = don't touch thresholds; the
+#                        actual sysfs write happens in msw-charge-apply)
+#   performance          profile: power-saver|balanced|performance|null,
+#                        cpu_cap: 16-100|null, epp/aspm: value|null,
+#                        dgpu: null|keep|auto (values of `msw-power gpu`)
+#   services             start: [...], stop: [...] -- systemd unit names or
+#                        config.services[].id entries
+#   radios               wifi / bluetooth: on|off|"keep"
+#
+# KEEP SEMANTICS
+#   Every section is optional. The string "keep" (and null for display/
+#   performance/charge_thresholds) means: do not touch that setting -- the
+#   corresponding kwriteconfig6/msw-power/msw-perf call is skipped entirely.
+#   A custom profile is merged onto a generic all-"keep" template, so a
+#   profile that only sets e.g. power.lid_action changes exactly that one key
+#   and nothing else. User objects from config.json are merged onto the
+#   builtin profiles (server/laptop) resp. the generic template with jq's `*`
+#   (deep merge; arrays and scalars in the user object REPLACE, they are not
+#   concatenated). A failing section (e.g. no sudo for charge thresholds)
+#   never aborts the remaining sections of the profile.
+#
+# LEGACY FALLBACK
+#   If config.json has NO "profiles" key, the builtin defaults are synthesized
+#   and overlaid with the pre-profile keys:
+#     mode.charge_thresholds.server|.laptop  -> charge_thresholds
+#     mode.charge_thresholds.enabled != true -> both charge_thresholds = null
+#     mode.stop_on_laptop[]                  -> server.services.start AND
+#                                               laptop.services.stop
+#   Once "profiles" exists, those legacy keys have no effect anymore.
+#
+# All config keys written to powerdevilrc/kscreenlockerrc are verified against
+# the Plasma 6 source (KDE upstream):
 #   powerdevil     PowerDevilProfileSettings.kcfg + daemon/powerdevilenums.h
 #   kscreenlocker  settings/kscreenlockersettings.kcfg
 
@@ -19,8 +64,9 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 
 # State is deliberately NOT under ~/.local/state: the system unit
 # msw-charge-thresholds.service reads it at boot and must not depend on a
-# user home being available.
-STATE_FILE=/var/lib/mobileserverswitch/mode
+# user home being available. Tests may override the path via MSW_STATE_FILE
+# (mirrors the MSW_CONFIG_FILE override of msw-config).
+STATE_FILE="${MSW_STATE_FILE:-/var/lib/mobileserverswitch/mode}"
 
 # First battery exposing charge-threshold sysfs support (generic -- not
 # hardcoded to BAT0; matches the detection in msw-charge-apply). Empty if no
@@ -39,20 +85,148 @@ readonly ACT_NONE=0 ACT_SLEEP=1 ACT_SHUTDOWN=8 ACT_PROMPT=16
 log()  { printf '%s\n' "$*"; logger -t msw-mode "$*" 2>/dev/null || true; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; logger -t msw-mode -p user.warning "$*" 2>/dev/null || true; }
 
-# --- Persist mode + apply charge thresholds (privileged) ----------------------
+# --- Builtin profile defaults + generic template --------------------------------
+# The canonical defaults of the two builtin profiles. Custom profiles are
+# merged onto PROFILE_TEMPLATE (all "keep"/null -> applies nothing until
+# configured). Keep both in sync with the schema documentation above.
+BUILTIN_PROFILES='{
+  "server": {
+    "label": "Server", "icon": "network-server",
+    "display": { "brightness": null, "resolution": null, "scale": null },
+    "power": { "lid_action": "ignore", "power_button": "ignore", "power_button_long": "ignore",
+               "auto_suspend": "ignore", "auto_suspend_min": 0,
+               "screen_off_min": 0, "dim_min": 0, "wol": "on" },
+    "locker": { "autolock": true, "timeout_min": 15 },
+    "charge_thresholds": "40/80",
+    "performance": { "profile": "balanced", "cpu_cap": null, "epp": null, "aspm": null, "dgpu": null },
+    "services": { "start": ["sunshine"], "stop": [] },
+    "radios": { "wifi": "keep", "bluetooth": "keep" }
+  },
+  "laptop": {
+    "label": "Laptop", "icon": "computer-laptop",
+    "display": { "brightness": null, "resolution": null, "scale": null },
+    "power": { "lid_action": "sleep", "power_button": "prompt", "power_button_long": "shutdown",
+               "auto_suspend": "sleep", "auto_suspend_min": 30,
+               "screen_off_min": 10, "dim_min": 5, "wol": "off" },
+    "locker": { "autolock": true, "timeout_min": 5 },
+    "charge_thresholds": "0/100",
+    "performance": { "profile": "balanced", "cpu_cap": null, "epp": null, "aspm": null, "dgpu": null },
+    "services": { "start": [], "stop": ["sunshine"] },
+    "radios": { "wifi": "on", "bluetooth": "keep" }
+  }
+}'
+
+PROFILE_TEMPLATE='{
+  "label": "", "icon": "dialog-question",
+  "display": { "brightness": null, "resolution": null, "scale": null },
+  "power": { "lid_action": "keep", "power_button": "keep", "power_button_long": "keep",
+             "auto_suspend": "keep", "auto_suspend_min": 0, "screen_off_min": null, "dim_min": null,
+             "wol": "keep" },
+  "locker": { "autolock": "keep", "timeout_min": 0 },
+  "charge_thresholds": null,
+  "performance": { "profile": null, "cpu_cap": null, "epp": null, "aspm": null, "dgpu": null },
+  "services": { "start": [], "stop": [] },
+  "radios": { "wifi": "keep", "bluetooth": "keep" }
+}'
+
+# --- Effective profiles map ------------------------------------------------------
+# PROFILES_JSON is the profiles map the rest of the script works with:
+#   config  -> the "profiles" object from config.json (user-defined)
+#   legacy  -> builtin defaults overlaid with pre-"profiles" config keys
+#   builtin -> the plain builtin defaults (no/unparseable config file, no jq)
+
+# legacy_profiles: synthesize the builtin defaults overlaid with the
+# pre-"profiles" config keys (see LEGACY FALLBACK in the header). Only called
+# when config.json exists, is parseable, and has no "profiles" key.
+legacy_profiles() {
+    local stop enabled cts ctl
+    stop=$(jq -c '.mode.stop_on_laptop // [] | if type == "array" then . else [] end' \
+        "$MSW_CONFIG_FILE" 2>/dev/null)
+    [ -z "$stop" ] && stop='[]'
+    enabled=$(msw_cfg mode.charge_thresholds.enabled false)
+    cts=$(msw_cfg mode.charge_thresholds.server "40/80")
+    ctl=$(msw_cfg mode.charge_thresholds.laptop "0/100")
+    jq -n -c --argjson base "$BUILTIN_PROFILES" --argjson stop "$stop" \
+           --arg enabled "$enabled" --arg cts "$cts" --arg ctl "$ctl" '
+        $base
+        | .server.charge_thresholds = (if $enabled == "true" then $cts else null end)
+        | .laptop.charge_thresholds = (if $enabled == "true" then $ctl else null end)
+        | .server.services.start = $stop
+        | .laptop.services.stop  = $stop'
+}
+
+if ! command -v jq >/dev/null 2>&1; then
+    PROFILE_SOURCE=builtin   # degraded: only the builtin profiles, statically
+    PROFILES_JSON="$BUILTIN_PROFILES"
+elif [ ! -r "$MSW_CONFIG_FILE" ] || ! jq -e 'type == "object"' "$MSW_CONFIG_FILE" >/dev/null 2>&1; then
+    PROFILE_SOURCE=builtin
+    PROFILES_JSON="$BUILTIN_PROFILES"
+elif jq -e '(.profiles // null) | type == "object"' "$MSW_CONFIG_FILE" >/dev/null 2>&1; then
+    PROFILE_SOURCE=config
+    PROFILES_JSON=$(jq -c '.profiles' "$MSW_CONFIG_FILE")
+else
+    PROFILE_SOURCE=legacy
+    PROFILES_JSON=$(legacy_profiles)
+fi
+
+# load_profile <id> -> merged profile JSON on stdout (builtin resp. generic
+# template * user object from PROFILES_JSON, jq `*` deep merge). Unknown id
+# (neither builtin nor present in the profiles map) -> error + exit 2.
+load_profile() {
+    local id=$1 user
+    if ! jq -e --arg id "$id" 'has($id)' <<<"$PROFILES_JSON" >/dev/null 2>&1; then
+        case "$id" in
+            server|laptop) user='{}' ;;   # builtin: defaults alone are the profile
+            *)
+                echo "msw-mode: unknown profile '$id'" >&2
+                echo "  Run 'msw-mode list' to see the available profiles." >&2
+                exit 2
+                ;;
+        esac
+    else
+        user=$(jq -c --arg id "$id" \
+            '.[$id] | if type == "object" then . else error("not an object") end' \
+            <<<"$PROFILES_JSON") || {
+                echo "msw-mode: profile '$id' in config is not a JSON object" >&2
+                exit 2
+            }
+    fi
+    jq -n -c --arg id "$id" --argjson user "$user" \
+           --argjson builtin "$BUILTIN_PROFILES" --argjson template "$PROFILE_TEMPLATE" '
+        ($builtin[$id] // $template) * $user'
+}
+
+# profile_meta <id> -> "label<TAB>icon" of the merged profile (display only)
+profile_meta() {
+    local id=$1
+    jq -n -r --arg id "$id" --argjson builtin "$BUILTIN_PROFILES" \
+             --argjson profiles "$PROFILES_JSON" --argjson template "$PROFILE_TEMPLATE" '
+        (($builtin[$id] // $template) * ($profiles[$id] // {}))
+        | [ (.label // ""), (.icon // "") ] | @tsv'
+}
+
+# pget <profile-json> <jq-path> -> scalar value; null/missing -> "-"
+# (explicit null check, NOT jq's `//`: false and 0 are real values here)
+pget() {
+    jq -r "($2) | if . == null then \"-\" else . end" <<<"$1"
+}
+
+# --- Persist profile + apply charge thresholds (privileged) ---------------------
 # The actual sysfs logic lives in /usr/local/sbin/msw-charge-apply, so the boot
-# unit and the mode switch guarantee the same values (one source of truth).
+# unit and the profile switch guarantee the same values (one source of truth).
+# A failure here (no sudo) must NOT abort the profile: the caller goes on with
+# the remaining sections either way.
 persist_and_charge() {
-    local mode=$1
+    local id=$1
     if ! sudo -n true 2>/dev/null; then
-        warn "sudo required for charge thresholds - mode NOT persisted, thresholds unchanged"
+        warn "sudo required for persisting the profile + charge thresholds - profile NOT persisted, thresholds unchanged"
         return 1
     fi
-    printf '%s\n' "$mode" | sudo -n tee "$STATE_FILE" >/dev/null
+    printf '%s\n' "$id" | sudo -n tee "$STATE_FILE" >/dev/null
     sudo -n /usr/local/sbin/msw-charge-apply | sed 's/^/  /'
 }
 
-# --- PowerDevil ---------------------------------------------------------------
+# --- PowerDevil ------------------------------------------------------------------
 pd() {  # pd <group> <key> <value> [type]
     local grp=$1 key=$2 val=$3 type=${4:-}
     if [ -n "$type" ]; then
@@ -62,52 +236,141 @@ pd() {  # pd <group> <key> <value> [type]
     fi
 }
 
-set_powerdevil() {
-    local lid=$1 pwrbtn=$2 pwrdown=$3 autosusp=$4 autosusp_t=$5 dpms=$6 dpms_t=$7 dim=$8 dim_t=$9
-    for PROFILE in AC Battery LowBattery; do
-        pd Display            TurnOffDisplayWhenIdle       "$dpms" bool
-        pd Display            TurnOffDisplayIdleTimeoutSec "$dpms_t"
-        pd Display            DimDisplayWhenIdle           "$dim"  bool
-        pd Display            DimDisplayIdleTimeoutSec     "$dim_t"
-        pd SuspendAndShutdown LidAction                    "$lid"
-        pd SuspendAndShutdown PowerButtonAction            "$pwrbtn"
-        pd SuspendAndShutdown PowerDownAction              "$pwrdown"
-        pd SuspendAndShutdown AutoSuspendAction            "$autosusp"
-        pd SuspendAndShutdown AutoSuspendIdleTimeoutSec    "$autosusp_t"
-    done
-    # refreshStatus, NOT reparseConfiguration: the latter only reloads
-    # GlobalSettings, not the profile keys (powerdevilcore.cpp).
-    busctl --user call org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement \
-        org.kde.Solid.PowerManagement refreshStatus >/dev/null 2>&1 \
-        || warn "PowerDevil refreshStatus failed - change takes effect only after next login"
+# act_num <ignore|sleep|shutdown|prompt> -> PowerDevil enum number (see ACT_*)
+act_num() {
+    case "$1" in
+        ignore)   printf '%s\n' "$ACT_NONE" ;;
+        sleep)    printf '%s\n' "$ACT_SLEEP" ;;
+        shutdown) printf '%s\n' "$ACT_SHUTDOWN" ;;
+        prompt)   printf '%s\n' "$ACT_PROMPT" ;;
+        *) return 1 ;;
+    esac
 }
 
-# --- Screen locker --------------------------------------------------------------
-set_locker() {  # set_locker <autolock> <timeout_min>
+# set_powerdevil <lid> <pwrbtn> <pwrdown> <susp> <susp_min> <screen_min> <dim_min>
+# Action args: ignore|sleep|shutdown|prompt|"keep" ("keep" = don't write that
+# key). susp_min: minutes, written together with AutoSuspendAction (only
+# validated when susp != keep). screen_min/dim_min: "-" (null in the profile)
+# = don't touch the display-off/dim keys at all; 0 = actively disable (screen
+# never turns off / never dims -- this is what the builtin server profile
+# uses); N = after N minutes.
+set_powerdevil() {
+    local lid=$1 pwrbtn=$2 pwrdown=$3 susp=$4 susp_min=$5 screen_min=$6 dim_min=$7
+    local n written=0
+    if [ "$susp" != keep ]; then
+        [[ "$susp_min" =~ ^[0-9]+$ ]] || { warn "power.auto_suspend_min: '$susp_min' is not a non-negative integer - treating as 0"; susp_min=0; }
+    fi
+    # Validate screen/dim once (not per PowerDevil profile); "-" = skip.
+    local screen_ok=1 dim_ok=1
+    if [ "$screen_min" != - ] && [[ ! "$screen_min" =~ ^[0-9]+$ ]]; then
+        warn "power.screen_off_min: '$screen_min' is not a non-negative integer - key skipped"; screen_ok=0
+    fi
+    if [ "$dim_min" != - ] && [[ ! "$dim_min" =~ ^[0-9]+$ ]]; then
+        warn "power.dim_min: '$dim_min' is not a non-negative integer - key skipped"; dim_ok=0
+    fi
+    for PROFILE in AC Battery LowBattery; do
+        # Note: PowerDevil's HandleButtonEvents only loads if ALL three button
+        # actions are != NoAction - a profile that sets all of them to
+        # "ignore" (like the builtin server) deliberately has no Plasma button
+        # handling at all.
+        if [ "$lid" != keep ]; then
+            n=$(act_num "$lid") || n=""
+            if [ -n "$n" ]; then pd SuspendAndShutdown LidAction "$n"; written=1
+            else warn "power.lid_action: invalid value '$lid' - key skipped"; fi
+        fi
+        if [ "$pwrbtn" != keep ]; then
+            n=$(act_num "$pwrbtn") || n=""
+            if [ -n "$n" ]; then pd SuspendAndShutdown PowerButtonAction "$n"; written=1
+            else warn "power.power_button: invalid value '$pwrbtn' - key skipped"; fi
+        fi
+        if [ "$pwrdown" != keep ]; then
+            n=$(act_num "$pwrdown") || n=""
+            if [ -n "$n" ]; then pd SuspendAndShutdown PowerDownAction "$n"; written=1
+            else warn "power.power_button_long: invalid value '$pwrdown' - key skipped"; fi
+        fi
+        if [ "$susp" != keep ]; then
+            n=$(act_num "$susp") || n=""
+            if [ -n "$n" ]; then
+                pd SuspendAndShutdown AutoSuspendAction "$n"
+                pd SuspendAndShutdown AutoSuspendIdleTimeoutSec "$((susp_min * 60))"
+                written=1
+            else warn "power.auto_suspend: invalid value '$susp' - key skipped"; fi
+        fi
+        if [ "$screen_min" != - ] && [ "$screen_ok" = 1 ]; then
+            if [ "$screen_min" -eq 0 ]; then
+                pd Display TurnOffDisplayWhenIdle false bool
+            else
+                pd Display TurnOffDisplayWhenIdle       true bool
+                pd Display TurnOffDisplayIdleTimeoutSec "$((screen_min * 60))"
+            fi
+            written=1
+        fi
+        if [ "$dim_min" != - ] && [ "$dim_ok" = 1 ]; then
+            if [ "$dim_min" -eq 0 ]; then
+                pd Display DimDisplayWhenIdle false bool
+            else
+                pd Display DimDisplayWhenIdle       true bool
+                pd Display DimDisplayIdleTimeoutSec "$((dim_min * 60))"
+            fi
+            written=1
+        fi
+    done
+    # refreshStatus, NOT reparseConfiguration: the latter only reloads
+    # GlobalSettings, not the profile keys (powerdevilcore.cpp). Only worth
+    # calling when at least one key was actually written.
+    if [ "$written" = 1 ]; then
+        busctl --user call org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement \
+            org.kde.Solid.PowerManagement refreshStatus >/dev/null 2>&1 \
+            || warn "PowerDevil refreshStatus failed - change takes effect only after next login"
+    fi
+}
+
+# --- Screen locker -----------------------------------------------------------------
+set_locker() {  # set_locker <autolock|keep> <timeout_min> ("keep" = don't touch)
+    local autolock=$1 timeout=$2
+    [ "$autolock" = keep ] && return 0
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key LockOnStart     --type bool true
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key LockOnResume    --type bool true
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key RequirePassword --type bool true
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key LockGrace       0
-    kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock        --type bool "$1"
-    kwriteconfig6 --file kscreenlockerrc --group Daemon --key Timeout         "$2"
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock        --type bool "$autolock"
+    kwriteconfig6 --file kscreenlockerrc --group Daemon --key Timeout         "$timeout"
     busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 \
         || warn "kwin reconfigure failed"
 }
 
-# --- Services (config-driven) --------------------------------------------------
-# config.mode.stop_on_laptop: list of entries, each either a bare systemd
-# unit name (e.g. "myapp.service") or a config.services[].id (resolved to
-# that service's `unit`). These services are started when switching to
-# SERVER mode and stopped when switching to LAPTOP mode ("run heavy while
-# plugged in as a server, sleep while mobile"). Nothing is hardcoded here
-# anymore -- no baked-in Sunshine (or any other app) reference. Missing
-# config / missing key / empty list -> nothing is started or stopped.
-stop_on_laptop_units() {
-    local raw entry unit
-    command -v jq >/dev/null 2>&1 || return 0
-    [ -r "$MSW_CONFIG_FILE" ] || return 0
-    raw=$(jq -r '.mode.stop_on_laptop // [] | .[]' "$MSW_CONFIG_FILE" 2>/dev/null)
-    [ -z "$raw" ] && return 0
+# --- Display (kscreen-doctor) -------------------------------------------------------
+# apply_display <brightness|-> <resolution|-> <scale|->   ("-" = not set)
+# All three unset -> section skipped without even probing the outputs.
+apply_display() {
+    local brightness=$1 resolution=$2 scale=$3
+    [ "$brightness" = - ] && [ "$resolution" = - ] && [ "$scale" = - ] && return 0
+    command -v kscreen-doctor >/dev/null 2>&1 \
+        || { warn "display: kscreen-doctor not found - display settings skipped"; return 0; }
+    # Target output: the first eDP-* (internal panel), else the first
+    # connected output.
+    local output
+    output=$(kscreen-doctor -j 2>/dev/null | jq -r '
+        (.outputs // []) as $o
+        | ([ $o[] | select(.name | test("^eDP-")) ][0].name) //
+          ([ $o[] | select(.connected == true) ][0].name) // empty' 2>/dev/null)
+    if [ -z "$output" ]; then
+        warn "display: no eDP-*/connected output found via kscreen-doctor - display settings skipped"
+        return 0
+    fi
+    [ "$brightness" != - ] && { kscreen-doctor "output.$output.brightness.$brightness" >/dev/null 2>&1 || warn "display: setting brightness=$brightness on $output failed"; }
+    [ "$resolution" != - ] && { kscreen-doctor "output.$output.mode.$resolution"       >/dev/null 2>&1 || warn "display: setting mode=$resolution on $output failed"; }
+    [ "$scale" != - ]      && { kscreen-doctor "output.$output.scale.$scale"           >/dev/null 2>&1 || warn "display: setting scale=$scale on $output failed"; }
+}
+
+# --- Services (config-driven) --------------------------------------------------------
+# Profiles carry two service lists: services.start (started when the profile is
+# applied) and services.stop (stopped). Each entry is either a bare systemd
+# unit name (e.g. "myapp.service") or a config.services[].id (resolved to that
+# service's `unit`). Nothing is hardcoded -- empty/missing lists mean nothing
+# is started or stopped.
+resolve_service_entries() {  # entries on stdin (one per line) -> unit names on stdout
+    local entry unit
     while IFS= read -r entry; do
         [ -z "$entry" ] && continue
         case "$entry" in
@@ -123,9 +386,8 @@ stop_on_laptop_units() {
                 printf '%s\n' "${unit:-$entry}"
                 ;;
         esac
-    done <<< "$raw"
+    done
 }
-mapfile -t STOP_ON_LAPTOP_UNITS < <(stop_on_laptop_units)
 
 svc() {  # svc start|stop <unit...>
     local action=$1; shift
@@ -141,37 +403,140 @@ svc() {  # svc start|stop <unit...>
     done
 }
 
-# --- Modes ------------------------------------------------------------------------
-mode_server() {
-    log "Switching to SERVER mode ..."
-    # Lid/power button: all NoAction. Note: PowerDevil's HandleButtonEvents only
-    # loads if ALL three actions are != NoAction - here deliberately fully
-    # inactive (power button has no Plasma function).
-    set_powerdevil "$ACT_NONE" "$ACT_NONE" "$ACT_NONE" "$ACT_NONE" 0 false 0 false 0
-    log "  Lid: ignore | Screen: never off | Auto-suspend: never"
-    set_locker true 15
-    log "  Lock: on start + after 15 min idle"
-    persist_and_charge server
-    svc start "${STOP_ON_LAPTOP_UNITS[@]}"
-    log "SERVER mode active."
+# --- Profile application --------------------------------------------------------------
+apply_profile_json() {  # <id> <merged-profile-json>
+    local id=$1 pj=$2
+    local label
+    label=$(jq -r '.label // ""' <<<"$pj")
+    log "Applying profile '$id'${label:+ ($label)} (source: $PROFILE_SOURCE) ..."
+
+    # display (skipped entirely when all three values are null)
+    apply_display "$(pget "$pj" .display.brightness)" \
+                  "$(pget "$pj" .display.resolution)" \
+                  "$(pget "$pj" .display.scale)"
+
+    # power management (PowerDevil) -- per-key "keep" skips inside
+    set_powerdevil "$(pget "$pj" .power.lid_action)" \
+                   "$(pget "$pj" .power.power_button)" \
+                   "$(pget "$pj" .power.power_button_long)" \
+                   "$(pget "$pj" .power.auto_suspend)" \
+                   "$(pget "$pj" .power.auto_suspend_min)" \
+                   "$(pget "$pj" .power.screen_off_min)" \
+                   "$(pget "$pj" .power.dim_min)"
+
+    # screen locker
+    set_locker "$(pget "$pj" .locker.autolock)" "$(pget "$pj" .locker.timeout_min)"
+
+    # persist profile id + charge thresholds (privileged; a failure here must
+    # not prevent the other sections)
+    persist_and_charge "$id" || true
+
+    # performance axis (delegated to msw-perf/msw-power; null = not set)
+    local prof cap epp aspm dgpu
+    prof=$(pget "$pj" .performance.profile)
+    cap=$(pget "$pj" .performance.cpu_cap)
+    epp=$(pget "$pj" .performance.epp)
+    aspm=$(pget "$pj" .performance.aspm)
+    dgpu=$(pget "$pj" .performance.dgpu)
+    [ "$prof" != - ] && { msw-perf "$prof"      || warn "performance.profile: 'msw-perf $prof' failed"; }
+    [ "$cap" != - ]  && { msw-perf pct "$cap"   || warn "performance.cpu_cap: 'msw-perf pct $cap' failed"; }
+    [ "$epp" != - ]  && { msw-power epp "$epp"  || warn "performance.epp: 'msw-power epp $epp' failed"; }
+    [ "$aspm" != - ] && { msw-power aspm "$aspm" || warn "performance.aspm: 'msw-power aspm $aspm' failed"; }
+    [ "$dgpu" != - ] && { msw-power gpu "$dgpu" || warn "performance.dgpu: 'msw-power gpu $dgpu' failed"; }
+
+    # services (start list first, then stop list)
+    local starts=() stops=()
+    mapfile -t starts < <(jq -r '(.services.start // []) | if type == "array" then .[] | strings else empty end' <<<"$pj" 2>/dev/null | resolve_service_entries)
+    mapfile -t stops  < <(jq -r '(.services.stop  // []) | if type == "array" then .[] | strings else empty end' <<<"$pj" 2>/dev/null | resolve_service_entries)
+    svc start "${starts[@]}"
+    svc stop "${stops[@]}"
+
+    # radios + Wake-on-LAN (wol lives in the power section of the schema)
+    local wifi bt wol
+    wifi=$(pget "$pj" .radios.wifi)
+    bt=$(pget "$pj" .radios.bluetooth)
+    wol=$(pget "$pj" .power.wol)
+    [ "$wifi" != keep ] && [ "$wifi" != - ] && { msw-power wifi "$wifi" || warn "radios.wifi: 'msw-power wifi $wifi' failed"; }
+    [ "$bt" != keep ]   && [ "$bt" != - ]   && { msw-power bt "$bt"     || warn "radios.bluetooth: 'msw-power bt $bt' failed"; }
+    [ "$wol" != keep ]  && [ "$wol" != - ]  && { msw-power wol "$wol"   || warn "power.wol: 'msw-power wol $wol' failed"; }
+
+    log "Profile '$id' applied."
 }
 
-mode_laptop() {
-    log "Switching to LAPTOP mode ..."
-    set_powerdevil "$ACT_SLEEP" "$ACT_PROMPT" "$ACT_SHUTDOWN" "$ACT_SLEEP" 1800 true 600 true 300
-    log "  Lid: suspend | Screen: off after 10 min | Auto-suspend: 30 min"
-    set_locker true 5
-    log "  Lock: on start + after 5 min idle + on wake"
-    # 0/100 = factory behavior: charge fully for travel / to run battery cycles
-    persist_and_charge laptop
-    svc stop "${STOP_ON_LAPTOP_UNITS[@]}"
-    log "LAPTOP mode active."
+# Static transcription of BUILTIN_PROFILES for systems without jq (the config
+# file cannot be parsed then anyway). Only the two builtin profiles are
+# reachable here; keep in sync with the JSON above.
+apply_builtin_nojq() {
+    local id=$1
+    log "Applying builtin profile '$id' (jq not found - builtin defaults, config ignored) ..."
+    case "$id" in
+        server)
+            set_powerdevil ignore ignore ignore ignore 0 0 0
+            set_locker true 15
+            persist_and_charge server || true
+            msw-perf balanced   || warn "performance.profile: 'msw-perf balanced' failed"
+            svc start sunshine
+            msw-power wol on    || warn "power.wol: 'msw-power wol on' failed"
+            ;;
+        laptop)
+            set_powerdevil sleep prompt shutdown sleep 30 10 5
+            set_locker true 5
+            persist_and_charge laptop || true
+            msw-perf balanced   || warn "performance.profile: 'msw-perf balanced' failed"
+            svc stop sunshine
+            msw-power wifi on   || warn "radios.wifi: 'msw-power wifi on' failed"
+            msw-power wol off   || warn "power.wol: 'msw-power wol off' failed"
+            ;;
+    esac
+    log "Profile '$id' applied."
+}
+
+apply_profile() {
+    local id=$1
+    if ! command -v jq >/dev/null 2>&1; then
+        case "$id" in
+            server|laptop) apply_builtin_nojq "$id"; return ;;
+            *) echo "msw-mode: jq is required for profile '$id'" >&2; exit 1 ;;
+        esac
+    fi
+    local pj
+    pj=$(load_profile "$id") || exit 2   # unknown ids exit 2 inside load_profile
+    apply_profile_json "$id" "$pj"
+}
+
+# --- Subcommands ---------------------------------------------------------------------
+mode_list() {
+    command -v jq >/dev/null 2>&1 || { echo "msw-mode: jq is required for 'list'" >&2; exit 1; }
+    local active=""
+    [ -r "$STATE_FILE" ] && active=$(head -n 1 "$STATE_FILE" 2>/dev/null)
+    # builtin ids first (in BUILTIN_PROFILES order), then custom ids sorted
+    local ids id meta label icon mark
+    ids=$(jq -n -r --argjson builtin "$BUILTIN_PROFILES" --argjson profiles "$PROFILES_JSON" '
+        ($builtin | keys_unsorted) as $b
+        | $b + ((($profiles | keys) - $b) | sort) | .[]')
+    while IFS= read -r id; do
+        [ -z "$id" ] && continue
+        meta=$(profile_meta "$id")
+        label=${meta%$'\t'*}
+        icon=${meta##*$'\t'}
+        mark=-
+        [ "$id" = "$active" ] && mark=active
+        printf '%s\t%s\t%s\t%s\n' "$id" "$label" "$icon" "$mark"
+    done <<<"$ids"
 }
 
 mode_status() {
-    local saved="unknown"
+    local saved="unknown" saved_label="" pj=""
     [ -r "$STATE_FILE" ] && saved=$(cat "$STATE_FILE")
-    echo "Saved mode: $saved"
+    if command -v jq >/dev/null 2>&1 && [ "$saved" != unknown ]; then
+        saved_label=$(profile_meta "$saved" 2>/dev/null | cut -f1)
+        pj=$(load_profile "$saved" 2>/dev/null) || pj=""
+    fi
+    if [ -n "$saved_label" ]; then
+        echo "Saved mode: $saved ($saved_label)"
+    else
+        echo "Saved mode: $saved"
+    fi
     echo
     echo "--- Current state ---"
     if [ -r "$BAT/charge_control_start_threshold" ]; then
@@ -190,18 +555,31 @@ mode_status() {
     echo "  locked:      $(loginctl show-session "$(loginctl list-sessions --no-legend | awk '$4=="seat0"{print $1;exit}')" -p LockedHint --value 2>/dev/null || echo '?')"
     echo "logind:"
     echo "  HandleLidSwitch: $(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager HandleLidSwitch 2>/dev/null | sed 's/^s //')"
-    echo "Services (config.mode.stop_on_laptop):"
-    local u
-    if [ "${#STOP_ON_LAPTOP_UNITS[@]}" -eq 0 ]; then
-        echo "  (none configured)"
+    echo "Services (active profile):"
+    local starts=() stops=() u
+    if [ -z "$pj" ]; then
+        echo "  (no known active profile)"
     else
-        for u in "${STOP_ON_LAPTOP_UNITS[@]}"; do
-            if systemctl --user cat "$u" &>/dev/null; then
-                echo "  $u: $(systemctl --user is-active "$u" 2>&1)"
-            else
-                echo "  $u: not installed"
-            fi
-        done
+        mapfile -t starts < <(jq -r '(.services.start // []) | if type == "array" then .[] | strings else empty end' <<<"$pj" 2>/dev/null | resolve_service_entries)
+        mapfile -t stops  < <(jq -r '(.services.stop  // []) | if type == "array" then .[] | strings else empty end' <<<"$pj" 2>/dev/null | resolve_service_entries)
+        if [ "${#starts[@]}" -eq 0 ] && [ "${#stops[@]}" -eq 0 ]; then
+            echo "  (none configured)"
+        else
+            for u in ${starts[@]+"${starts[@]}"}; do
+                if systemctl --user cat "$u" &>/dev/null; then
+                    echo "  start: $u: $(systemctl --user is-active "$u" 2>&1)"
+                else
+                    echo "  start: $u: not installed"
+                fi
+            done
+            for u in ${stops[@]+"${stops[@]}"}; do
+                if systemctl --user cat "$u" &>/dev/null; then
+                    echo "  stop:  $u: $(systemctl --user is-active "$u" 2>&1)"
+                else
+                    echo "  stop:  $u: not installed"
+                fi
+            done
+        fi
     fi
     echo "Network:"
     # Look up 'metric' by label rather than field index - ip-route output has a
@@ -224,17 +602,21 @@ mode_status() {
 }
 
 # --- main ---------------------------------------------------------------------
-MODE="${1:-status}"
-case "$MODE" in
-    server) mode_server ;;
-    laptop) mode_laptop ;;
+CMD="${1:-status}"
+case "$CMD" in
     status|"") mode_status ;;
+    list) mode_list ;;
     -h|--help|help)
         sed -n '2,12p' "$0" | sed 's/^# \?//'
         ;;
-    *)
-        echo "Unknown mode: $MODE" >&2
-        echo "Usage: msw-mode {server|laptop|status}" >&2
+    --*)
+        echo "Unknown option: $CMD" >&2
+        sed -n '2,12p' "$0" | sed 's/^# \?//' >&2
         exit 2
+        ;;
+    *)
+        # any other word is a profile id (builtin or from config "profiles");
+        # unknown ids fail inside load_profile with exit 2
+        apply_profile "$CMD"
         ;;
 esac

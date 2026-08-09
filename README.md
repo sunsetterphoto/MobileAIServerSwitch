@@ -50,12 +50,29 @@ capture.
 |---|---|
 | **Overview** | Compact read-only summary: mode, performance preset, dGPU power draw, battery/AC, an Addresses line (primary + Tailnet address), SSH/remote-desktop status, active services, Wake-on-LAN. Sections jump to their detail tab on click. |
 | **Performance** | Three presets (power saver / balanced / performance) via KDE's PowerProfiles (`org.freedesktop.UPower.PowerProfiles`) plus a fine CPU-cap slider (`intel_pstate/max_perf_pct`, 16-100%, turbo on/off). Also: dGPU runtime power management and the WiFi/Bluetooth radios. |
-| **Mode** | Server ⇄ Laptop switch. Server mode favors uninterrupted uptime (screen lock/suspend behavior, charging, background services); switching back to Laptop stops the configured server services and asks for confirmation first. |
+| **Mode** | Switchable, editable **profiles** — Laptop/Server defaults plus your own (see [Profiles](#profiles) below). A profile bundles display/brightness, power behavior (lid, power buttons, auto-suspend, screen-off), battery charge thresholds, performance, services and the WiFi/Bluetooth radios; the machine-level parts are re-applied at boot. |
 | **Network** | How the machine is reachable right now: hostname, which interface carries the default route and via which gateway, the active DNS resolvers, and every interface with its IPv4/IPv6 addresses (selectable, so they can be copied). Virtual interfaces sort last and are labelled as such, so a bridge is not mistaken for a way in. |
 | **Remote Access** | Status and details for SSH, RDP (KRDP), VNC, Sunshine, KDE Connect, Tailnet (copyable IP), Wake-on-LAN. On/off switches for RDP and Sunshine; **SSH and Tailscale are deliberately read-only** (lockout protection). |
 | **Services** | A configurable list of user/system services (systemd) with live status, port reachability, and start/stop. |
 | **Firewall** | firewalld status (zone, LAN interfaces, open ports, SSH always shown allowed) plus targeted LAN-only blocks for configured apps (e.g. RDP/VNC). Tailnet access is never affected by these blocks. |
 | **Notes** | A scratchpad for what matters about this machine, stored as a plain file (`~/.config/mobileserverswitch/notes.md`, mode 600) so it stays editable over SSH with any editor. Saves are debounced; if the file changed outside the widget, an automatic save is suppressed and you are asked instead — an automatic action never overwrites someone else's edit. |
+
+## Profiles
+
+The Mode tab is built on **profiles**: named bundles of settings applied
+together when you switch. Two editable defaults ship with the widget —
+**Server** and **Laptop** — and you can add your own profiles as extra keys
+in the `profiles` map (id: lowercase letters, digits, dashes).
+
+Every key in a profile is optional: omit it, set it to `null`, or use
+`"keep"` to leave that aspect untouched when switching — a profile only
+changes what it explicitly configures.
+
+- Full schema and defaults: [`config/config.example.json`](config/config.example.json);
+  profiles are editable there and in the widget's settings dialog.
+- CLI: `msw-mode list` shows all profiles, `msw-mode <id>` activates one.
+- At boot, `msw-profile-apply.service` re-applies the machine-level parts of
+  the active profile (charge thresholds, power behavior, radios).
 
 ## Requirements & compatibility
 

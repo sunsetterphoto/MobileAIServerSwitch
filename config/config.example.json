@@ -44,9 +44,38 @@
   },
 
   "mode": {
+    "_comment": "Legacy fallback: charge_thresholds and stop_on_laptop are only read when the config has NO \"profiles\" key. New configs should use the profiles map below instead.",
     "enabled": true,
     "charge_thresholds": { "enabled": false, "server": "40/80", "laptop": "0/100" },
     "stop_on_laptop": ["sunshine"]
+  },
+
+  "profiles": {
+    "_comment": "Switchable profiles: 'msw-mode list' shows them all, 'msw-mode <id>' activates one. Every key is optional -- omit it, set it to null, or use \"keep\" to leave that aspect untouched when switching. The two defaults are meant to be edited; add your own profiles as extra keys in this map (id: lowercase letters, digits, dashes). Enums: lid_action/power_button/power_button_long/auto_suspend: ignore|sleep|shutdown|prompt|keep; wol/wifi/bluetooth: on|off|keep; screen_off_min/dim_min: null = keep, 0 = never, N = minutes; charge_thresholds: \"NN/NN\" or null; performance.profile: power-saver|balanced|performance|null; dgpu: null|keep|auto (\"keep\" keeps the dGPU awake). Machine-level parts are re-applied at boot.",
+    "server": {
+      "label": "Server", "icon": "network-server",
+      "display": { "brightness": null, "resolution": null, "scale": null },
+      "power": { "lid_action": "ignore", "power_button": "ignore", "power_button_long": "ignore",
+                 "auto_suspend": "ignore", "auto_suspend_min": 0,
+                 "screen_off_min": 0, "dim_min": 0, "wol": "on" },
+      "locker": { "autolock": true, "timeout_min": 15 },
+      "charge_thresholds": "40/80",
+      "performance": { "profile": "balanced", "cpu_cap": null, "epp": null, "aspm": null, "dgpu": null },
+      "services": { "start": ["sunshine"], "stop": [] },
+      "radios": { "wifi": "keep", "bluetooth": "keep" }
+    },
+    "laptop": {
+      "label": "Laptop", "icon": "computer-laptop",
+      "display": { "brightness": null, "resolution": null, "scale": null },
+      "power": { "lid_action": "sleep", "power_button": "prompt", "power_button_long": "shutdown",
+                 "auto_suspend": "sleep", "auto_suspend_min": 30,
+                 "screen_off_min": 10, "dim_min": 5, "wol": "off" },
+      "locker": { "autolock": true, "timeout_min": 5 },
+      "charge_thresholds": "0/100",
+      "performance": { "profile": "balanced", "cpu_cap": null, "epp": null, "aspm": null, "dgpu": null },
+      "services": { "start": [], "stop": ["sunshine"] },
+      "radios": { "wifi": "on", "bluetooth": "keep" }
+    }
   },
 
   "firewall": {

@@ -72,6 +72,31 @@ assert "jq -e '.firewall.apps | (has(\"comfyui\") | not)' >/dev/null <<<\"\$J\""
 assert "jq -e '.firewall.high_ports_open | type == \"boolean\"' >/dev/null <<<\"\$J\""       "firewall.high_ports_open is bool"
 assert "jq -e '.firewall.ssh_allowed == true' >/dev/null <<<\"\$J\""                          "firewall.ssh_allowed == true"
 
+# --- profiles block: defaults without any config --------------------------------
+# `active` mirrors the mode STATE FILE, not the config, so the "no config"
+# setup above does not pin it to "?" -- this host may legitimately have one.
+# Compute the expectation with the exact same fallback the CLI uses.
+PROFILES_EXP_ACTIVE=$( [ -r /var/lib/mobileserverswitch/mode ] && cat /var/lib/mobileserverswitch/mode || echo "?" )
+assert "jq -e --arg a \"$PROFILES_EXP_ACTIVE\" '.profiles.active == \$a' >/dev/null <<<\"\$J\"" \
+       "profiles.active mirrors the mode state file (is $PROFILES_EXP_ACTIVE)"
+# Without a config, `available` is exactly the two builtins in this fixed
+# order -- the widget must always have something to offer.
+assert "jq -e '.profiles.available == [{id:\"server\",label:\"Server\",icon:\"network-server\",builtin:true},{id:\"laptop\",label:\"Laptop\",icon:\"computer-laptop\",builtin:true}]' >/dev/null <<<\"\$J\"" \
+       "profiles.available defaults to the two builtins (server, laptop)"
+
+# --- services_detected: shape ---------------------------------------------------
+# Content is host-dependent (whatever happens to be installed here), so only
+# the FORM is pinned: an array whose entries carry exactly the same base
+# shape as config services entries -- {id,label,unit,scope,port} -- with
+# scope user|system and port a number or null.
+assert "jq -e '.services_detected | type == \"array\"' >/dev/null <<<\"\$J\"" ".services_detected is an array"
+assert "jq -e '.services_detected | all((keys | sort) == [\"id\",\"label\",\"port\",\"scope\",\"unit\"])' >/dev/null <<<\"\$J\"" \
+       "every detected service has exactly id/label/unit/scope/port"
+assert "jq -e '.services_detected | all(.scope == \"user\" or .scope == \"system\")' >/dev/null <<<\"\$J\"" \
+       "every detected service scope is user or system"
+assert "jq -e '.services_detected | all(.port == null or (.port | type == \"number\"))' >/dev/null <<<\"\$J\"" \
+       "every detected service port is a number or null"
+
 # --- Config-driven services + firewall.apps: temp config with a custom -----
 #     service AND a custom firewall app (not rdp/vnc) -- assert both surface
 #     correctly and that the default rdp/vnc keys are gone once a config
@@ -80,7 +105,12 @@ mkdir -p "$CFG_DIR"
 cat > "$CFG_FILE" <<'JSON'
 {
   "services": [ { "id": "testsvc", "label": "Test Service", "unit": "test-svc.service", "scope": "user", "port": 9999 } ],
-  "firewall": { "apps": [ { "id": "myapp", "ports_tcp": "9999" } ] }
+  "firewall": { "apps": [ { "id": "myapp", "ports_tcp": "9999" } ] },
+  "profiles": {
+    "server": { "label": "Homeserver", "icon": "server-database" },
+    "zprofil": { "label": "Z Profil" },
+    "aprofil": {}
+  }
 }
 JSON
 
@@ -93,6 +123,18 @@ assert "jq -e '.services[0] | has(\"exposure\")' >/dev/null <<<\"\$J2\""  "confi
 assert "jq -e '.firewall.apps | has(\"myapp\")' >/dev/null <<<\"\$J2\""              "config-driven firewall.apps: custom app id present"
 assert "jq -e '.firewall.apps.myapp.blocked | type == \"boolean\"' >/dev/null <<<\"\$J2\"" "config-driven firewall.apps: myapp.blocked is bool"
 assert "jq -e '.firewall.apps | (has(\"rdp\") | not)' >/dev/null <<<\"\$J2\""        "config-driven firewall.apps: default rdp key gone once config defines its own apps"
+# profiles with a config: builtin label/icon overrides apply (the builtins
+# themselves stay first and builtin:true), custom profiles follow sorted by
+# id with label falling back to the id and icon to "dialog-question".
+assert "jq -e '.profiles.available | length == 4' >/dev/null <<<\"\$J2\""          "profiles: two builtins + two custom profiles from config"
+assert "jq -e '.profiles.available[0] == {id:\"server\",label:\"Homeserver\",icon:\"server-database\",builtin:true}' >/dev/null <<<\"\$J2\"" \
+       "profiles: builtin label/icon overridden from config"
+assert "jq -e '.profiles.available[1] == {id:\"laptop\",label:\"Laptop\",icon:\"computer-laptop\",builtin:true}' >/dev/null <<<\"\$J2\"" \
+       "profiles: untouched builtin keeps its defaults"
+assert "jq -e '.profiles.available[2] == {id:\"aprofil\",label:\"aprofil\",icon:\"dialog-question\",builtin:false}' >/dev/null <<<\"\$J2\"" \
+       "profiles: custom profile with empty body falls back to id label + default icon (sorted first)"
+assert "jq -e '.profiles.available[3] == {id:\"zprofil\",label:\"Z Profil\",icon:\"dialog-question\",builtin:false}' >/dev/null <<<\"\$J2\"" \
+       "profiles: custom profile with label override (sorted after aprofil)"
 
 # --- Regression: invalid firewall_zone must not read as "firewalld down" ---
 #     network.firewall_zone is user-editable config. msw-status asks
@@ -111,6 +153,33 @@ JSON
 else
     echo "  (skipping invalid-zone regression: firewalld is not running on this host)"
 fi
+
+# --- services_detected: configured candidates are filtered ----------------------
+# Configure ALL nine detection candidates at once -- eight under their
+# canonical id (exercises the id-match) and nginx under a RENAMED id
+# (exercises the unit-match). services_detected must then be empty no matter
+# what is installed on this host, which keeps the check load-bearing
+# everywhere instead of depending on the host's package list.
+mkdir -p "$CFG_DIR"
+cat > "$CFG_FILE" <<'JSON'
+{
+  "services": [
+    { "id": "sunshine",    "label": "Sunshine",    "unit": "sunshine.service",    "scope": "user",   "port": 47989 },
+    { "id": "jellyfin",    "label": "Jellyfin",    "unit": "jellyfin.service",    "scope": "system", "port": 8096 },
+    { "id": "ollama",      "label": "Ollama",      "unit": "ollama.service",      "scope": "system", "port": 11434 },
+    { "id": "syncthing",   "label": "Syncthing",   "unit": "syncthing.service",   "scope": "user",   "port": 8384 },
+    { "id": "code-server", "label": "code-server", "unit": "code-server.service", "scope": "user",   "port": 8080 },
+    { "id": "docker",      "label": "Docker",      "unit": "docker.service",      "scope": "system", "port": 0 },
+    { "id": "postgresql",  "label": "PostgreSQL",  "unit": "postgresql.service",  "scope": "system", "port": 5432 },
+    { "id": "smb",         "label": "Samba",       "unit": "smb.service",         "scope": "system", "port": 445 },
+    { "id": "myweb",       "label": "My Web",      "unit": "nginx.service",       "scope": "system", "port": 8080 }
+  ]
+}
+JSON
+J4=$(bin/msw-status --json)
+assert "jq -e '.services | length == 9' >/dev/null <<<\"\$J4\""            "detected-filter fixture: all nine candidates configured"
+assert "jq -e '.services_detected | length == 0' >/dev/null <<<\"\$J4\"" \
+       "configured candidates are filtered from services_detected (id-match, plus unit-match for the renamed nginx)"
 
 # --- exposure_for_port: unit test against a stubbed `ss` ----------------------
 # The classification decides whether the widget claims a port is reachable from
@@ -373,6 +442,50 @@ assert "jq -e '.remote.vnc.active or (.remote.vnc.owner == null)' >/dev/null <<<
     assert_eq "$(jq -r '.active' <<<"$R")" "true"  "vnc: IPv6 listener -> active true"
     assert_eq "$(jq -r '.port'   <<<"$R")" "5900"  "vnc: IPv6 listener -> port parsed correctly"
     assert_eq "$(jq -r '.owner'  <<<"$R")" "krfb"  "vnc: IPv6 listener -> owner matches"
+) || exit 1
+
+# --- svc_detected_json: unit test against stubbed unit listings -----------------
+# The live filter check above proves filtering only for candidates that are
+# actually installed on this host. This exercises the REAL detection function
+# (extracted from the shipped CLI, same pattern as exposure_for_port /
+# vnc_socket_json above) against fabricated unit listings, so candidate
+# detection, the id-filter, the unit-filter, docker's port:null and the
+# sunshine flatpak special case are all pinned deterministically.
+(
+    eval "$(sed -n '/^svc_unit_installed() {/,/^}/p;/^svc_configured() {/,/^}/p;/^svc_detected_json() {/,/^}/p' bin/msw-status)"
+    SVC_UNITS_SYSTEM=$'jellyfin.service\nnginx.service\npostgresql.service'
+    SVC_UNITS_USER=$'sunshine.service\nsyncthing.service'
+
+    SVC_CONFIGURED=""
+    R=$(svc_detected_json)
+    assert_eq "$(jq -r 'map(.id) | join(",")' <<<"$R")" "sunshine,jellyfin,syncthing,nginx,postgresql" \
+              "detected: installed candidates, in candidate-list order"
+    assert "jq -e 'all((keys | sort) == [\"id\",\"label\",\"port\",\"scope\",\"unit\"])' >/dev/null <<<\"\$R\"" \
+           "detected: entries carry exactly id/label/unit/scope/port"
+    assert_eq "$(jq -r '.[0].port' <<<"$R")" "47989" "detected: numeric port stays a number"
+
+    SVC_CONFIGURED=$'jellyfin'
+    R=$(svc_detected_json)
+    assert_eq "$(jq -r 'map(.id) | join(",")' <<<"$R")" "sunshine,syncthing,nginx,postgresql" \
+              "detected: candidate configured by id is filtered out"
+
+    SVC_CONFIGURED=$'nginx.service'
+    R=$(svc_detected_json)
+    assert_eq "$(jq -r 'map(.id) | join(",")' <<<"$R")" "sunshine,jellyfin,syncthing,postgresql" \
+              "detected: candidate configured by unit is filtered out (even under a different id)"
+
+    SVC_UNITS_SYSTEM=$'docker.service'
+    SVC_UNITS_USER=""
+    SVC_CONFIGURED=""
+    R=$(svc_detected_json)
+    assert_eq "$(jq -r '.[0].id'   <<<"$R")" "docker" "detected: docker candidate detected"
+    assert_eq "$(jq -r '.[0].port' <<<"$R")" "null"   "detected: docker candidate carries port null"
+
+    SVC_UNITS_SYSTEM=""
+    SVC_UNITS_USER=$'app-dev.lizardbyte.app.Sunshine.service'
+    R=$(svc_detected_json)
+    assert_eq "$(jq -r 'map(.id) | join(",")' <<<"$R")" "sunshine" \
+              "detected: sunshine found via its flatpak unit name"
 ) || exit 1
 
 pass

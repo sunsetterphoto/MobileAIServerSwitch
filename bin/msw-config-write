@@ -2,6 +2,8 @@
 # msw-config-write — writes ~/.config/mobileserverswitch/config.json from a
 # JSON object read on stdin.
 #
+#   msw-config-write [--replace <toplevel-key>] ...
+#
 # This is the ONLY write path from the plasmoid's settings UI into the config
 # file the CLIs read: QML has no direct filesystem access, so the settings
 # dialog (config/config.qml + ui/config*.qml) assembles the nested config
@@ -27,7 +29,18 @@
 # object is present (missing file, or unparseable), the incoming JSON is
 # written as-is.
 #
+# --replace <toplevel-key> (repeatable): for the listed top-level keys the
+# deep-merge is suspended -- if the incoming JSON contains the key, its value
+# REPLACES the existing value completely instead of being merged into it.
+# This is what allows the profile editor to DELETE profiles: with
+# `--replace profiles`, an incoming profiles map that no longer contains a
+# profile id removes that id from the config (a plain merge would keep it
+# forever). Keys that are absent from the incoming JSON are left untouched,
+# --replace or not. Without --replace the behavior is bit-identical to the
+# plain jq `*` merge.
+#
 #   echo '{"services":[...]}' | msw-config-write
+#   echo '{"profiles":{...}}' | msw-config-write --replace profiles
 set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
@@ -35,6 +48,34 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
 . "$SCRIPT_DIR/msw-config"
 
 command -v jq >/dev/null 2>&1 || { echo "msw-config-write: jq is required" >&2; exit 1; }
+
+# --- arguments -------------------------------------------------------------------
+REPLACE_KEYS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --replace)
+            [ $# -ge 2 ] || { echo "msw-config-write: --replace requires a top-level key argument" >&2; exit 2; }
+            REPLACE_KEYS+=("$2")
+            shift 2
+            ;;
+        -h|--help|help)
+            sed -n '2,4p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            echo "msw-config-write: unknown argument: $1" >&2
+            sed -n '2,4p' "$0" | sed 's/^# \?//' >&2
+            exit 2
+            ;;
+    esac
+done
+
+# JSON array of the --replace keys for the jq program below ('[]' = plain merge)
+if [ "${#REPLACE_KEYS[@]}" -gt 0 ]; then
+    repl_json=$(printf '%s\n' "${REPLACE_KEYS[@]}" | jq -R . | jq -sc .)
+else
+    repl_json='[]'
+fi
 
 input=$(cat)
 
@@ -52,11 +93,20 @@ tmp=$(mktemp "$dir/.config.json.XXXXXX") || { echo "msw-config-write: mktemp fai
 trap 'rm -f "$tmp"' EXIT
 
 if [ -s "$target" ] && jq -e 'type == "object"' "$target" >/dev/null 2>&1; then
-    if ! jq -s '.[0] * .[1]' "$target" <(printf '%s' "$input") > "$tmp"; then
+    # Deep-merge (jq `*`); each --replace key present in the incoming JSON is
+    # then set to the incoming value outright (replacing the merged value).
+    # With repl_json='[]' the reduce is a no-op and this is exactly '.[0] * .[1]'.
+    if ! jq -s --argjson repl "$repl_json" '
+            .[0] as $o | .[1] as $n
+            | ($o * $n)
+            | reduce ($repl[]) as $k (.; if ($n | has($k)) then .[$k] = $n[$k] else . end)
+        ' "$target" <(printf '%s' "$input") > "$tmp"; then
         echo "msw-config-write: jq merge failed" >&2
         exit 1
     fi
 else
+    # No existing valid config object: the incoming JSON is written as-is
+    # (--replace is a no-op then, there is nothing to replace).
     if ! printf '%s' "$input" | jq '.' > "$tmp"; then
         echo "msw-config-write: jq formatting failed" >&2
         exit 1

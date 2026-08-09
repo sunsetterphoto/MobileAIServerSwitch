@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# Re-applies the active msw profile's machine-level settings at boot.
+# Caller: msw-profile-apply.service (Type=oneshot, multi-user.target). Runs as
+# root; not part of the sudoers grant (nothing user-facing calls it).
+#
+# Active profile id: /var/lib/mobileserverswitch/mode (default: "server").
+# Values come from the profiles.<id> block of config.json (schema: see
+# config/config.example.json). Applied here:
+#   charge_thresholds      -> always delegated to msw-charge-apply, which also
+#                             covers the legacy no-profiles config shape and
+#                             its own opt-in/default handling
+#   power.wol              -> msw-power-apply wol  (on|off; keep/null = skip)
+#   radios.wifi            -> msw-power-apply wifi (on|off; keep/null = skip)
+#   radios.bluetooth       -> msw-power-apply bt   (on|off; keep/null = skip)
+#   performance.epp        -> msw-power-apply epp  (string; null = skip)
+#   performance.aspm       -> msw-power-apply aspm (null = skip)
+#   performance.dgpu       -> msw-power-apply gpu  (keep|auto; null = skip --
+#                             "keep" is a real value here, it holds the dGPU
+#                             awake: msw-power-apply maps it to power/control=on)
+#   performance.profile    -> msw-perf-apply <band-target%> <band-turbo>
+#   performance.cpu_cap    -> msw-perf-apply <cap> <band-turbo, else current>
+#
+# Deliberately NOT done here:
+# - PowerProfiles D-Bus (msw-perf's set_profile): at boot the user session /
+#   polkit is not ready yet. Cap + turbo via intel_pstate is the machine-level
+#   equivalent and is what persists across reboots.
+# - User-session parts of the profile (display, locker, PowerDevil settings):
+#   Plasma persists/restores those itself.
+#
+# Fail-safe like msw-charge-apply: missing config/jq/hardware/helpers ->
+# message, step skipped. A failing apply step warns, the next step runs, and
+# the script always exits 0 -- a half-applied profile must never block boot.
+set -uo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+. "$SCRIPT_DIR/msw-config"
+
+STATE=/var/lib/mobileserverswitch/mode
+SBIN=/usr/local/sbin
+
+MODE=$( [ -r "$STATE" ] && cat "$STATE" || echo server )   # default: server
+echo "Active msw profile: $MODE (state file: $STATE)"
+
+# try <cmd...> -- run a privileged helper; not-found and failures are a
+# message/warning, never fatal (see header: boot must not block).
+try() {
+    if [ ! -x "$1" ]; then
+        echo "NOTE: $1 not found/executable -- step skipped"
+        return 0
+    fi
+    "$@" || echo "WARNING: '$*' failed (exit $?) -- continuing" >&2
+    return 0
+}
+
+# prof_cfg <dotpath-under-profile> -- print profiles[$MODE].<path>, empty when
+# jq/config/key missing or the value is null. The profile id goes via --arg
+# (profile ids may contain dashes, which break jq dot-paths); the sub-path is
+# always a fixed literal from this script.
+prof_cfg() {
+    local sub=$1
+    command -v jq >/dev/null 2>&1 || return 0
+    [ -r "$MSW_CONFIG_FILE" ] || return 0
+    jq -r --arg m "$MODE" ".profiles[\$m].${sub} // empty" "$MSW_CONFIG_FILE" 2>/dev/null
+}
+
+# power_key <what> <subpath> -- apply one power/radio key; unset/null/"keep"
+# means "leave the machine state alone" (for dgpu "keep" is different, see
+# below, so it is handled separately).
+power_key() {
+    local what=$1 sub=$2 val
+    val=$(prof_cfg "$sub")
+    case "$val" in
+        ""|null|keep) return 0 ;;
+    esac
+    # msw-power-apply validates the value itself (exit 2) -> bad values become
+    # a warning via try(), no separate validation here.
+    try "$SBIN/msw-power-apply" "$what" "$val"
+}
+
+# --- Charge thresholds: always (charge + legacy fallback live in that helper) --
+try "$SBIN/msw-charge-apply"
+
+# --- Profile block present? -----------------------------------------------------
+PROFILE_PRESENT=$(
+    command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ] \
+        && jq -r --arg m "$MODE" '(.profiles[$m] != null)' "$MSW_CONFIG_FILE" 2>/dev/null
+)
+if [ "$PROFILE_PRESENT" != "true" ]; then
+    echo "No profiles.$MODE block in $MSW_CONFIG_FILE (or no config/jq) -- only charge thresholds applied"
+    exit 0
+fi
+
+# --- Power / radios ---------------------------------------------------------------
+power_key wol  power.wol
+power_key wifi radios.wifi
+power_key bt   radios.bluetooth
+power_key epp  performance.epp
+power_key aspm performance.aspm
+# dgpu: unlike the keys above, "keep" is NOT "skip" -- msw-power-apply maps it
+# to power/control=on (dGPU held awake, see config schema: "keep keeps the
+# dGPU awake"). Only null/unset skips.
+VAL=$(prof_cfg performance.dgpu)
+case "$VAL" in
+    ""|null) : ;;
+    *) try "$SBIN/msw-power-apply" gpu "$VAL" ;;
+esac
+
+# --- CPU cap / turbo ---------------------------------------------------------------
+PERF_PROFILE=$(prof_cfg performance.profile)
+CPU_CAP=$(prof_cfg performance.cpu_cap)
+
+PERF_TARGET=""; PERF_TURBO=""
+case "$PERF_PROFILE" in
+    ""|null) : ;;
+    *)
+        # Band from the canonical source: bin/msw-perf, function band()
+        # ("min max target turbo"). Resolve the CLI via $MSW_BIN_DIR (the
+        # systemd unit sets it to the installing user's bin dir), then the
+        # usual per-user/system locations.
+        MSW_PERF=""
+        for d in "${MSW_BIN_DIR:-}" "$HOME/.local/bin" /usr/local/bin; do
+            [ -n "$d" ] && [ -x "$d/msw-perf" ] && { MSW_PERF="$d/msw-perf"; break; }
+        done
+        if [ -n "$MSW_PERF" ]; then
+            read -r _ _ PERF_TARGET PERF_TURBO <<<"$("$MSW_PERF" band "$PERF_PROFILE" 2>/dev/null)"
+        fi
+        case "$PERF_TURBO" in on|off) : ;; *) PERF_TARGET=""; PERF_TURBO="" ;; esac
+        if [ -z "$PERF_TARGET" ]; then
+            # DELIBERATE DUPLICATION of the band mapping in bin/msw-perf
+            # (function band(): power-saver -> 40%/turbo off, balanced ->
+            # 70%/on, performance -> 100%/on) -- keep in sync with that file.
+            # Needed so boot-time apply works even when the user CLI is not
+            # installed/reachable from this root context.
+            case "$PERF_PROFILE" in
+                power-saver) PERF_TARGET=40;  PERF_TURBO=off ;;
+                balanced)    PERF_TARGET=70;  PERF_TURBO=on  ;;
+                performance) PERF_TARGET=100; PERF_TURBO=on  ;;
+                *) echo "NOTE: unknown performance.profile '$PERF_PROFILE' -- CPU step skipped" ;;
+            esac
+        fi
+        ;;
+esac
+
+CAP=""; TURBO=""
+case "$CPU_CAP" in
+    ""|null)
+        # no explicit cap: the band's target% is the cap (if a profile is set)
+        [ -n "$PERF_TARGET" ] && { CAP=$PERF_TARGET; TURBO=$PERF_TURBO; }
+        ;;
+    *)
+        CAP=$CPU_CAP   # range is validated by msw-perf-apply (16..100)
+        if [ -n "$PERF_TURBO" ]; then
+            TURBO=$PERF_TURBO
+        else
+            # keep the current turbo state (same rule as `msw-perf pct`)
+            NT=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo 0)
+            TURBO=$([ "$NT" = 0 ] && echo on || echo off)
+        fi
+        ;;
+esac
+
+if [ -n "$CAP" ]; then
+    # No PowerProfiles D-Bus call here on purpose (see header) -- only the
+    # machine-level cap + turbo via the privileged helper.
+    try "$SBIN/msw-perf-apply" "$CAP" "$TURBO"
+fi
+
+exit 0

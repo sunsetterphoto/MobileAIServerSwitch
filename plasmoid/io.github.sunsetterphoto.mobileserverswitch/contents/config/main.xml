@@ -59,6 +59,10 @@
     </entry>
   </group>
 
+  <!-- LEGACY (pre-profiles) keys. No longer edited by any settings page;
+       kept ONLY as the migration source for main.qml's
+       migrateLegacyProfileSettings(), which folds non-default values into
+       profilesJson once and then never reads them again. Do not remove. -->
   <group name="Mode">
     <entry name="modeEnabled" type="Bool">
       <default>true</default>
@@ -76,6 +80,19 @@
          mode.stop_on_laptop array. -->
     <entry name="stopOnLaptopJson" type="String">
       <default>[]</default>
+    </entry>
+  </group>
+
+  <group name="Profiles">
+    <!-- JSON object of profile definitions keyed by profile id; maps to
+         config.json's top-level "profiles" object (replaced wholesale via
+         msw-config-write's "replace profiles" mode). Edited via
+         ui/configProfiles.qml. Default = the two canonical builtin profiles
+         (server/laptop). main.qml's profilesDefaultJson and
+         configProfiles.qml's cfg_profilesJsonDefault MUST stay in sync with
+         this exact string (the migration compares against it). -->
+    <entry name="profilesJson" type="String">
+      <default>{"server":{"label":"Server","icon":"network-server","display":{"brightness":null,"resolution":null,"scale":null},"power":{"lid_action":"ignore","power_button":"ignore","power_button_long":"ignore","auto_suspend":"ignore","auto_suspend_min":0,"screen_off_min":0,"dim_min":0,"wol":"on"},"locker":{"autolock":true,"timeout_min":15},"charge_thresholds":"40/80","performance":{"profile":"balanced","cpu_cap":null,"epp":null,"aspm":null,"dgpu":null},"services":{"start":["sunshine"],"stop":[]},"radios":{"wifi":"keep","bluetooth":"keep"}},"laptop":{"label":"Laptop","icon":"computer-laptop","display":{"brightness":null,"resolution":null,"scale":null},"power":{"lid_action":"sleep","power_button":"prompt","power_button_long":"shutdown","auto_suspend":"sleep","auto_suspend_min":30,"screen_off_min":10,"dim_min":5,"wol":"off"},"locker":{"autolock":true,"timeout_min":5},"charge_thresholds":"0/100","performance":{"profile":"balanced","cpu_cap":null,"epp":null,"aspm":null,"dgpu":null},"services":{"start":[],"stop":["sunshine"]},"radios":{"wifi":"on","bluetooth":"keep"}}}</default>
     </entry>
   </group>
 

@@ -31,7 +31,25 @@ for f in bin/*; do [ -f "$f" ] && do_cp "$f" "$HOME/.local/bin/$(basename "$f")"
 echo "system/usr-local-sbin (/usr/local/sbin, root):"
 for f in system/usr-local-sbin/*; do [ -f "$f" ] && do_cp "$f" "/usr/local/sbin/$(basename "$f")" 755 sudo; done
 echo "system/systemd (/etc/systemd/system, root):"
-for f in system/systemd/*.service; do [ -f "$f" ] && do_cp "$f" "/etc/systemd/system/$(basename "$f")" 644 sudo; done
+for f in system/systemd/*.service; do
+    [ -f "$f" ] || continue
+    # msw-profile-apply.service is a template with placeholder tokens (rendered
+    # by install.sh on a real install); it is handled separately below.
+    [ "$(basename "$f")" = "msw-profile-apply.service" ] && continue
+    do_cp "$f" "/etc/systemd/system/$(basename "$f")" 644 sudo
+done
+# Render the placeholders for this machine, then deploy like the other units
+# (inline instead of do_cp so --dry-run does not even create the temp file).
+if [ "$DRY" = 1 ]; then
+    echo "  system/systemd/msw-profile-apply.service -> /etc/systemd/system/msw-profile-apply.service (mode 644, root; placeholders rendered)"
+else
+    RENDERED_UNIT=$(mktemp)
+    sed -e "s|__CONFIG__|${XDG_CONFIG_HOME:-$HOME/.config}/mobileserverswitch/config.json|g" \
+        -e "s|__USERBIN__|$HOME/.local/bin|g" \
+        system/systemd/msw-profile-apply.service > "$RENDERED_UNIT"
+    sudo -n install -D -m 644 "$RENDERED_UNIT" /etc/systemd/system/msw-profile-apply.service
+    rm -f "$RENDERED_UNIT"
+fi
 
 if [ "$DRY" = 0 ]; then
     # DELIBERATELY NOT `kpackagetool6 --upgrade "$PLASMO_DST"`: since source ==

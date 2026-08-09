@@ -1,0 +1,14 @@
+[Unit]
+Description=Re-apply the active msw profile's machine-level settings (charge thresholds, WoL, radios, CPU)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=MSW_CONFIG_FILE=__CONFIG__
+Environment=MSW_BIN_DIR=__USERBIN__
+Environment=PATH=__USERBIN__:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/sbin/msw-profile-apply
+
+[Install]
+WantedBy=multi-user.target

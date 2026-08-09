@@ -11,7 +11,8 @@ assert "[ -f packaging/mobileserverswitch.sudoers ]" "sudoers source exists"
 bash -n install.sh   || { echo "FAIL: install.sh has a syntax error"; exit 1; }
 bash -n uninstall.sh || { echo "FAIL: uninstall.sh has a syntax error"; exit 1; }
 bash -n tests/test_install.sh || { echo "FAIL: test_install.sh has a syntax error"; exit 1; }
-pass "bash -n install.sh / uninstall.sh / test_install.sh"
+bash -n system/usr-local-sbin/msw-profile-apply || { echo "FAIL: msw-profile-apply has a syntax error"; exit 1; }
+pass "bash -n install.sh / uninstall.sh / test_install.sh / msw-profile-apply"
 
 # --- --dry-run writes nothing -------------------------------------------------
 SANDBOX=$(mktemp -d)
@@ -35,6 +36,25 @@ assert "grep -q '/etc/sudoers.d/mobileserverswitch' <<<\"\$out\"" "lists the sud
 assert "grep -q 'config/config.example.json' <<<\"\$out\"" "lists the default-config action"
 assert "grep -qi 'dry-run' <<<\"\$out\"" "explicitly marks itself as a dry-run"
 pass "install.sh --dry-run lists the correct actions/paths"
+
+# --- msw-profile-apply: helper installed + boot unit rendered/enabled by default --
+assert "grep -q 'system/usr-local-sbin/msw-profile-apply -> /usr/local/sbin/msw-profile-apply' <<<\"\$out\"" "msw-profile-apply lands in /usr/local/sbin"
+assert "grep -q '/etc/systemd/system/msw-profile-apply.service' <<<\"\$out\"" "profile unit target is listed"
+assert "grep -qF \"Environment=MSW_CONFIG_FILE=\$SANDBOX/.config/mobileserverswitch/config.json\" <<<\"\$out\"" "unit has the rendered config path"
+assert "grep -qF \"Environment=MSW_BIN_DIR=\$SANDBOX/.local/bin\" <<<\"\$out\"" "unit has the rendered user bin dir"
+assert "grep -qF \"Environment=PATH=\$SANDBOX/.local/bin:/usr/local/sbin\" <<<\"\$out\"" "unit PATH starts with the user bin dir"
+assert "! grep -qF '__CONFIG__' <<<\"\$out\"" "no __CONFIG__ placeholder left in the rendered unit"
+assert "! grep -qF '__USERBIN__' <<<\"\$out\"" "no __USERBIN__ placeholder left in the rendered unit"
+assert "grep -q 'systemctl enable msw-profile-apply.service' <<<\"\$out\"" "profile unit is enabled by default"
+pass "install.sh installs msw-profile-apply + rendered, enabled unit by default"
+
+# --- --no-profile-service suppresses the unit (helper still installed) -----------
+out4=$(HOME=$(mktemp -d) ./install.sh --dry-run --yes --no-profile-service 2>&1)
+assert "grep -q 'Skipped (--no-profile-service)' <<<\"\$out4\"" "--no-profile-service is honored"
+assert "! grep -q '/etc/systemd/system/msw-profile-apply.service' <<<\"\$out4\"" "--no-profile-service suppresses the unit install"
+assert "! grep -q 'systemctl enable msw-profile-apply' <<<\"\$out4\"" "--no-profile-service suppresses the enable"
+assert "grep -q 'msw-profile-apply -> /usr/local/sbin/msw-profile-apply' <<<\"\$out4\"" "helper itself is still installed"
+pass "install.sh --no-profile-service skips the unit, keeps the helper"
 
 # --- --no-sudoers skips the sudoers section entirely --------------------------
 out2=$(HOME=$(mktemp -d) ./install.sh --dry-run --no-sudoers 2>&1)

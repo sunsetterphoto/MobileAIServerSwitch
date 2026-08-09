@@ -516,9 +516,111 @@ if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
 fi
 SERVICES=$(jq -s '.' <<< "$SERVICES_ROWS")
 
+# --- Profiles -------------------------------------------------------------------
+# `profiles` is the profile-switcher contract the plasmoid builds against:
+#   active    -- the profile currently in effect (the mode state file, same
+#                source as the top-level `mode` key; "?" when unreadable)
+#   available -- every profile the user can pick. The two builtins (server,
+#                laptop) ALWAYS come first and can never disappear; a config
+#                entry under profiles.server/profiles.laptop only overrides
+#                their label/icon. Any other key of the config's `profiles`
+#                object is a custom profile and follows, sorted by id for a
+#                stable order, with label falling back to the id and icon to
+#                "dialog-question". Missing config / missing jq / a non-object
+#                `profiles` key all degrade to exactly the two builtins --
+#                the widget must always have something to offer.
+PROFILES_CFG="{}"
+if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
+    PROFILES_CFG=$(jq -c '.profiles // {} | if type == "object" then . else {} end' "$MSW_CONFIG_FILE" 2>/dev/null)
+    [ -n "$PROFILES_CFG" ] || PROFILES_CFG="{}"
+fi
+PROFILES=$(jq -nc --arg mode "$MODE" --argjson profiles_cfg "$PROFILES_CFG" '
+    def obj: if type == "object" then . else {} end;
+    def builtins: [
+        {id:"server", label:"Server", icon:"network-server",  builtin:true},
+        {id:"laptop", label:"Laptop", icon:"computer-laptop", builtin:true}
+    ];
+    ($profiles_cfg | obj) as $p
+    | { active: $mode,
+        available: (
+            [ builtins[] | . as $b | ($p[$b.id] | obj) as $o
+              | { id: $b.id, label: ($o.label // $b.label), icon: ($o.icon // $b.icon), builtin: true } ]
+            +
+            [ $p | keys[] | select(. != "server" and . != "laptop") | . as $id | ($p[$id] | obj) as $o
+              | { id: $id, label: ($o.label // $id), icon: ($o.icon // "dialog-question"), builtin: false } ]
+        ) }')
+
+# --- Service self-detection -----------------------------------------------------
+# `services` (above) is config-driven only. `services_detected` is the
+# discovery half: well-known services that ARE installed on this system but
+# NOT yet in config services[] -- the plasmoid offers these as one-click
+# additions instead of making the user type unit names. Entries carry the
+# same base shape as config services entries ({id,label,unit,scope,port};
+# no active/exposure -- nothing is polled for candidates).
+#
+# Installed check: ONE `list-unit-files` call per scope (not one systemctl
+# call per candidate -- this runs on every widget poll), then exact-match
+# greps. A user session without a systemd user bus simply yields an empty
+# user list, so user-scoped candidates degrade to "not installed" instead of
+# failing. Filtering compares against the configured services by id OR unit
+# (a config entry renaming the id still suppresses the candidate via unit).
+SVC_UNITS_SYSTEM=$(systemctl list-unit-files --no-legend --no-pager 2>/dev/null | awk '{print $1}')
+SVC_UNITS_USER=$(systemctl --user list-unit-files --no-legend --no-pager 2>/dev/null | awk '{print $1}')
+SVC_CONFIGURED=""
+if command -v jq >/dev/null 2>&1 && [ -r "$MSW_CONFIG_FILE" ]; then
+    SVC_CONFIGURED=$(jq -r '.services // [] | .[] | (.id // empty), (.unit // empty)' "$MSW_CONFIG_FILE" 2>/dev/null)
+fi
+
+svc_unit_installed() {  # $1 = unit, $2 = scope(user|system)
+    if [ "$2" = system ]; then
+        grep -qxF "$1" <<<"$SVC_UNITS_SYSTEM"
+    else
+        grep -qxF "$1" <<<"$SVC_UNITS_USER"
+    fi
+}
+
+svc_configured() {  # $1 = id, $2 = unit -- already in config services[]?
+    grep -qxF "$1" <<<"$SVC_CONFIGURED" || grep -qxF "$2" <<<"$SVC_CONFIGURED"
+}
+
+svc_detected_json() {
+    local rows="" d_id d_label d_unit d_scope d_port
+    while IFS='|' read -r d_id d_label d_unit d_scope d_port; do
+        [ -z "$d_id" ] && continue
+        svc_configured "$d_id" "$d_unit" && continue
+        # Sunshine is the one candidate whose unit name depends on packaging:
+        # a flatpak-only install ships app-dev.lizardbyte.app.Sunshine.service
+        # and no sunshine.service (same special case as SUN_INST above).
+        if [ "$d_id" = sunshine ]; then
+            svc_unit_installed "$d_unit" "$d_scope" \
+                || svc_unit_installed "app-dev.lizardbyte.app.Sunshine.service" "$d_scope" \
+                || continue
+        else
+            svc_unit_installed "$d_unit" "$d_scope" || continue
+        fi
+        rows+=$(jq -nc --arg id "$d_id" --arg label "$d_label" --arg unit "$d_unit" \
+                      --arg scope "$d_scope" --argjson port "$d_port" \
+                      '{id:$id,label:$label,unit:$unit,scope:$scope,port:$port}')
+        rows+=$'\n'
+    done <<'CANDIDATES'
+sunshine|Sunshine (game streaming)|sunshine.service|user|47989
+jellyfin|Jellyfin (media server)|jellyfin.service|system|8096
+ollama|Ollama (local LLM)|ollama.service|system|11434
+syncthing|Syncthing (file sync)|syncthing.service|user|8384
+code-server|code-server (VS Code web)|code-server.service|user|8080
+docker|Docker (containers)|docker.service|system|null
+nginx|nginx (web server)|nginx.service|system|80
+postgresql|PostgreSQL (database)|postgresql.service|system|5432
+smb|Samba (file sharing)|smb.service|system|445
+CANDIDATES
+    jq -s '.' <<< "$rows"
+}
+SERVICES_DETECTED=$(svc_detected_json)
+
 # --- Assemble ------------------------------------------------------------------
 jq -n \
   --arg mode "$MODE" \
+  --argjson profiles "$PROFILES" \
   --arg profile "$PROFILE" --argjson mpp "$MPP" --argjson turbo "$TURBO" \
   --argjson batt "${BATT:-null}" --arg charge "$CS/$CE" --arg bstatus "$BSTATUS" --argjson ac "$AC" \
   --argjson ssh_active "$(port_active 22)" --arg ssh_exp "$(exposure_for_port 22)" \
@@ -532,10 +634,12 @@ jq -n \
   --arg gpu_dstate "$GPU_DSTATE" --argjson gpu_watts "$GPU_WATTS" --arg gpu_control "$GPU_CONTROL" \
   --arg epp "$EPP" --arg aspm "$ASPM" --arg wifi "$WIFI" --arg bt "$BT" \
   --argjson services "$SERVICES" \
+  --argjson services_detected "$SERVICES_DETECTED" \
   --argjson firewall "$FIREWALL" \
   --argjson network "$NETWORK" \
   '{
     mode:$mode,
+    profiles:$profiles,
     perf:{profile:$profile,max_perf_pct:$mpp,turbo:$turbo},
     power:{battery:$batt,charge:$charge,status:$bstatus,ac:$ac},
     gpu:{present:$gpu_present,awake:$gpu_awake,dstate:$gpu_dstate,watts:$gpu_watts,control:$gpu_control},
@@ -551,5 +655,6 @@ jq -n \
       vnc:{installed:$vnc_inst,active:$vnc.active,port:$vnc.port,owner:$vnc.owner},
       wol:$wol
     },
-    services:$services
+    services:$services,
+    services_detected:$services_detected
   }'
