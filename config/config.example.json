@@ -45,6 +45,13 @@
       "scope": "user",
       "port": 8000
     },
+    "bonsai-ternary": {
+      "id": "bonsai-ternary",
+      "label": "Bonsai 27B ternary (PrismML llama.cpp)",
+      "unit": "bonsai-ternary.service",
+      "scope": "user",
+      "port": 8080
+    },
     "syncthing": {
       "id": "syncthing",
       "label": "Syncthing (file sync)",
